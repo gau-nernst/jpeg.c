@@ -1,8 +1,11 @@
 #include "jpeg.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 // ITU-T.81, Table B.1
+const u_int8_t TEM = 0x01;
+
 const u_int8_t SOF0 = 0xC0;
 const u_int8_t SOF1 = 0xC1;
 const u_int8_t SOF2 = 0xC2;
@@ -25,6 +28,8 @@ const u_int8_t SOF13 = 0xCD;
 const u_int8_t SOF14 = 0xCE;
 const u_int8_t SOF15 = 0xCF;
 
+const u_int8_t RST0 = 0xD0;
+
 const u_int8_t SOI = 0xD8;
 const u_int8_t EOI = 0xD9;
 const u_int8_t SOS = 0xDA;
@@ -45,14 +50,29 @@ unsigned int read_2_bytes(FILE *f) {
   return (buffer[0] << 8) | buffer[1];
 }
 
-void handle_sof(u_int8_t *payload) { printf("SOI"); }
+void handle_sof(const u_int8_t *payload) { printf("SOI"); }
 
-void handle_app0(u_int8_t *payload) { printf("APP0"); }
+// JFIF i.e. JPEG Part 5
+void handle_app0(const u_int8_t *payload) {
+  printf("APP0\n");
+  printf("  identifier = %.5s\n", payload); // either JFIF or JFXX
+
+  if (strcmp(payload, "JFIF") == 0) {
+    printf("  version = %d.%d\n", payload[5], payload[6]);
+    printf("  units = %d\n", payload[7]);
+    printf("  density = (%d, %d)\n", (payload[8] << 8) | payload[9],
+           (payload[10] << 8) | payload[11]);
+    printf("  thumbnail = (%d, %d)\n", payload[12], payload[13]);
+  } else if (strcmp(payload, "JFXX") == 0) {
+    printf("  extension_code = %X\n", payload[5]);
+  } else
+    printf("  Invalid identifier\n");
+}
 
 // exif
-void handle_app1(u_int8_t *payload) { printf("APP1"); }
+void handle_app1(const u_int8_t *payload) { printf("APP1"); }
 
-void handle_unknown(u_int8_t *payload) { printf("Unknown marker"); }
+void handle_unknown(const u_int8_t *payload) { printf("Unknown marker"); }
 
 int main(int argc, char *argv[]) {
   FILE *f = fopen("sample.jpg", "rb");
@@ -73,7 +93,8 @@ int main(int argc, char *argv[]) {
       return 1;
     }
 
-    if (marker[1] == SOI | marker[1] == EOI) {
+    if (marker[1] == TEM | marker[1] == SOI | marker[1] == EOI |
+        (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
       length = 0;
     } else {
       length = read_2_bytes(f);
