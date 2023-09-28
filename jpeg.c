@@ -57,20 +57,28 @@ void handle_app0(const u_int8_t *payload) {
   printf("APP0\n");
   printf("  identifier = %.5s\n", payload); // either JFIF or JFXX
 
-  if (strcmp(payload, "JFIF") == 0) {
+  if (strcmp((const char *)payload, "JFIF") == 0) {
     printf("  version = %d.%d\n", payload[5], payload[6]);
     printf("  units = %d\n", payload[7]);
     printf("  density = (%d, %d)\n", (payload[8] << 8) | payload[9],
            (payload[10] << 8) | payload[11]);
     printf("  thumbnail = (%d, %d)\n", payload[12], payload[13]);
-  } else if (strcmp(payload, "JFXX") == 0) {
+  } else if (strcmp((const char *)payload, "JFXX") == 0) {
     printf("  extension_code = %X\n", payload[5]);
   } else
     printf("  Invalid identifier\n");
 }
 
 // exif
-void handle_app1(const u_int8_t *payload) { printf("APP1"); }
+void handle_app1(const u_int8_t *payload) {
+  printf("APP1\n");
+  printf("  identifier = %s\n", payload);
+
+  if (strcmp((const char *)payload, "Exif") == 0) {
+    printf("  Exif detected\n");
+  } else
+    printf("  Invalid identifier\n");
+}
 
 void handle_unknown(const u_int8_t *payload) { printf("Unknown marker"); }
 
