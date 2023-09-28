@@ -1,4 +1,3 @@
-#include "jpeg.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,11 +43,8 @@ const u_int8_t APP1 = 0xE1;
 
 const u_int8_t COM = 0xFE;
 
-unsigned int read_2_bytes(FILE *f) {
-  u_int8_t buffer[2];
-  fread(buffer, 1, 2, f);
-  return (buffer[0] << 8) | buffer[1];
-}
+// assume system is little-endian
+uint16_t parse_2_bytes(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
 
 void handle_sof(const u_int8_t *payload) { printf("SOI"); }
 
@@ -60,8 +56,7 @@ void handle_app0(const u_int8_t *payload) {
   if (strcmp((const char *)payload, "JFIF") == 0) {
     printf("  version = %d.%d\n", payload[5], payload[6]);
     printf("  units = %d\n", payload[7]);
-    printf("  density = (%d, %d)\n", (payload[8] << 8) | payload[9],
-           (payload[10] << 8) | payload[11]);
+    printf("  density = (%d, %d)\n", parse_2_bytes(payload + 8), parse_2_bytes(payload + 10));
     printf("  thumbnail = (%d, %d)\n", payload[12], payload[13]);
   } else if (strcmp((const char *)payload, "JFXX") == 0) {
     printf("  extension_code = %X\n", payload[5]);
@@ -80,6 +75,15 @@ void handle_app1(const u_int8_t *payload) {
     printf("  Invalid identifier\n");
 }
 
+void handle_dqt(const u_int8_t *payload) {
+  printf("DQT\n");
+  int precision = payload[0] >> 4;
+  int identifier = payload[0] & 0xF;
+
+  printf("  precision = %d\n", precision);
+  printf("  identifier = %d\n", identifier);
+}
+
 void handle_unknown(const u_int8_t *payload) { printf("Unknown marker"); }
 
 int main(int argc, char *argv[]) {
@@ -90,7 +94,7 @@ int main(int argc, char *argv[]) {
   }
 
   u_int8_t marker[2];
-  unsigned int length;
+  u_int16_t length;
   u_int8_t *payload = NULL;
   for (;;) {
     fread(marker, 1, 2, f);
@@ -101,11 +105,14 @@ int main(int argc, char *argv[]) {
       return 1;
     }
 
-    if (marker[1] == TEM | marker[1] == SOI | marker[1] == EOI |
-        (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
+    if (marker[1] == TEM | marker[1] == SOI | marker[1] == EOI | (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
       length = 0;
     } else {
-      length = read_2_bytes(f);
+      fread(&length, 1, 2, f);
+      length = parse_2_bytes((const uint8_t *)&length);
+    }
+    printf(" length = %5d ", length);
+    if (length) {
       payload = malloc(length - 2);
       if (payload == NULL) {
         printf("Failed to allocate memory\n");
@@ -113,7 +120,6 @@ int main(int argc, char *argv[]) {
       }
       fread(payload, 1, length - 2, f);
     }
-    printf(" length = %5d ", length);
 
     switch (marker[1]) {
     case SOI:
@@ -126,6 +132,10 @@ int main(int argc, char *argv[]) {
 
     case APP1:
       handle_app1(payload);
+      break;
+
+    case DQT:
+      handle_dqt(payload);
       break;
 
     default:
