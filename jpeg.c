@@ -4,6 +4,19 @@
 #include <string.h>
 
 #define BLOCK_SIZE 8
+
+#define try_malloc(ptr, size)                                                                                          \
+  if ((ptr = malloc(size)) == NULL) {                                                                                  \
+    printf("Failed to allocate memory");                                                                               \
+    return 1;                                                                                                          \
+  }
+
+#define try_fread(ptr, size, n_items, stream)                                                                          \
+  if (fread(ptr, size, n_items, stream) < (size * n_items)) {                                                          \
+    printf("Failed to read data. Perhaps EOF?\n");                                                                     \
+    return 1;                                                                                                          \
+  }
+
 #define print_q_table(table)                                                                                           \
   for (int i = 0; i < BLOCK_SIZE; i++) {                                                                               \
     printf(" ");                                                                                                       \
@@ -11,6 +24,9 @@
       printf(" %3d", table[ZIG_ZAG[i][j]]);                                                                            \
     printf("\n");                                                                                                      \
   }
+
+// https://stackoverflow.com/a/2745086
+#define ceil_div(x, y) (((x)-1) / (y) + 1)
 
 // ITU-T.81, Table B.1
 #define TEM 0x01
@@ -64,23 +80,26 @@ struct HuffmanTable {
 };
 
 struct JPEGState {
-  unsigned int width;
-  unsigned int height;
+  uint8_t encoding;
+  uint16_t width;
+  uint16_t height;
+  uint8_t n_channels;
   struct QuantizationTable q_tables[4];
   struct HuffmanTable h_tables[4];
+  void *image_buffer;
 };
 
 uint16_t read_be_16(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
 uint8_t upper_half(uint8_t x) { return x >> 4; }
 uint8_t lower_half(uint8_t x) { return x & 0xF; }
 
-int decode_jpeg(FILE *f);
-int handle_app0(const uint8_t *payload);
-int handle_app1(const uint8_t *payload);
-int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state);
-int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state);
-int handle_sof0(const uint8_t *payload);
-int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f);
+int decode_jpeg(FILE *);
+int handle_app0(const uint8_t *);
+int handle_app1(const uint8_t *);
+int handle_dqt(const uint8_t *, struct JPEGState *);
+int handle_dht(const uint8_t *, struct JPEGState *);
+int handle_sof0(const uint8_t *, struct JPEGState *);
+int handle_sos(const uint8_t *, struct JPEGState *, FILE *);
 
 // clang-format off
 const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
@@ -111,7 +130,7 @@ int decode_jpeg(FILE *f) {
   uint8_t *payload = NULL;
 
   for (;;) {
-    fread(marker, 1, 2, f);
+    try_fread(marker, 1, 2, f);
     printf("%X%X ", marker[0], marker[1]);
 
     if (marker[0] != 0xFF) {
@@ -122,24 +141,14 @@ int decode_jpeg(FILE *f) {
     if (marker[1] == TEM | marker[1] == SOI | marker[1] == EOI | (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
       length = 0;
     } else {
-      if (fread(&length, 1, 2, f) < 2) {
-        printf("Failed to read data. Perhaps EOF?\n");
-        return 1;
-      }
+      try_fread(&length, 1, 2, f);
       length = read_be_16((const uint8_t *)&length);
     }
     if (length) {
       // TODO: re-use payload buffer
       // max buffer size?
-      payload = malloc(length - 2);
-      if (payload == NULL) {
-        printf("Failed to allocate memory\n");
-        return 1;
-      }
-      if (fread(payload, 1, length - 2, f) < length - 2) {
-        printf("Failed to read data. Perhaps EOF?\n");
-        return 1;
-      }
+      try_malloc(payload, length - 2);
+      try_fread(payload, 1, length - 2, f);
     }
 
     switch (marker[1]) {
@@ -173,7 +182,7 @@ int decode_jpeg(FILE *f) {
 
     case SOF0:
       printf("SOF0 (length = %d)\n", length);
-      if (handle_sof0(payload))
+      if (handle_sof0(payload, &jpeg_state))
         return 1;
       break;
 
@@ -233,22 +242,18 @@ int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state) {
 
   struct QuantizationTable *q_table = &(jpeg_state->q_tables[identifier]);
   q_table->precision = precision;
-  q_table->data = malloc((precision + 1) * 64);
-  if (jpeg_state->q_tables[identifier].data == NULL) {
-    printf("Failed to allocate memory\n");
-    return 1;
-  }
+  try_malloc(q_table->data, (precision + 1) * 64);
 
   if (precision) { // 16-bit
     uint16_t *data = q_table->data;
     for (int i = 0; i < 64; i++)
       data[i] = read_be_16(payload + 1 + i * 2);
-    print_q_table(data)
+    print_q_table(data);
   } else {
     uint8_t *data = q_table->data;
     for (int i = 0; i < 64; i++)
       data[i] = payload[1 + i];
-    print_q_table(data)
+    print_q_table(data);
   }
 
   return 0;
@@ -281,18 +286,22 @@ int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state) {
   return 0;
 }
 
-int handle_sof0(const uint8_t *payload) {
+int handle_sof0(const uint8_t *payload, struct JPEGState *jpeg_state) {
+  jpeg_state->encoding = 0;
+
   // Table B.2
   uint8_t precision = payload[0];
-  uint16_t height = read_be_16(payload + 1);
-  uint16_t width = read_be_16(payload + 3);
-  uint8_t n_channels = payload[5];
+  jpeg_state->height = read_be_16(payload + 1);
+  jpeg_state->width = read_be_16(payload + 3);
+  jpeg_state->n_channels = payload[5];
+
+  try_malloc(jpeg_state->image_buffer, precision / 8 * jpeg_state->height * jpeg_state->width * jpeg_state->n_channels);
 
   printf("  encoding = Baseline DCT\n");
   printf("  precision = %d-bit\n", precision);
-  printf("  image dimension = (%d, %d)\n", width, height);
+  printf("  image dimension = (%d, %d)\n", jpeg_state->width, jpeg_state->height);
 
-  for (int i = 0; i < n_channels; i++) {
+  for (int i = 0; i < jpeg_state->n_channels; i++) {
     uint8_t channel = payload[6 + i * 3];
     uint8_t x_sampling_factor = upper_half(payload[7 + i * 3]);
     uint8_t y_sampling_factor = lower_half(payload[7 + i * 3]);
@@ -331,10 +340,22 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
   printf("  ah = %d\n", ah);
   printf("  al = %d\n", al);
 
-  // not handle 16-bit image for now
+  // decode scan
+  // don't support 16-bit image for now
   uint8_t pred = 0;
+  uint8_t decode;
+  uint8_t diff;
 
-  // not support restart interval RST
+  // assume 4:2:0 chroma-subsampling
+  uint16_t n_mcus = ceil_div(jpeg_state->width, BLOCK_SIZE) * ceil_div(jpeg_state->height, BLOCK_SIZE) * 3 / 2;
+
+  // refer to T.81 Table A.2 for MCU packing order
+  for (int i = 0; i < n_mcus; i++) {
+    // decode DC
+    try_fread(&decode, 1, 1, f);
+
+    // decode AC
+  }
 
   return 0;
 }
