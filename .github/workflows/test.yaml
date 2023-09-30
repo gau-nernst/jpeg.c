@@ -5,33 +5,28 @@ on:
       - README.md
       - .gitignore
 
-jobs:
-  test-ubuntu:
-    runs-on: ubuntu-latest
-    steps:
-      - &checkout
-        name: Checkout
-        uses: actions/checkout@v3
-      - &download_image
-        name: Download sample image
-        run: curl https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg420exif.jpg -o sample.jpg
-      - name: Compile and Run
-        run: gcc jpeg.c -o jpeg && ./jpeg
+env:
+  sample_image_url: https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg420exif.jpg
 
-  test-macos:
-    runs-on: macos-latest
+jobs:
+  test-unix:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cc: gcc
+          - os: macos-latest
+            cc: clang
     steps:
-      - *checkout
-      - *download_image
-      - name: Compile and Run
-        run: clang jpeg.c -o jpeg && ./jpeg
+      - uses: actions/checkout@v3
+      - run: curl ${{ env.sample_image_url }} -o sample.jpg
+      - run: ${{ cc }} jpeg.c -o jpeg && ./jpeg
 
   test-windows:
     runs-on: windows-latest
     steps:
-      - *checkout
-      - *download_image
-      - name: Setup MSVC on Windows
-        uses: ilammy/msvc-dev-cmd@v1
-      - name: Compile and Run
-        run: cl jpeg.c && ./jpeg
+      - uses: actions/checkout@v3
+      - run: curl ${{ env.sample_image_url }} -o sample.jpg
+      - uses: ilammy/msvc-dev-cmd@v1
+      - run: cl jpeg.c && ./jpeg
