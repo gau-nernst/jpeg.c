@@ -69,10 +69,131 @@ struct JPEGState {
   struct HuffmanTable h_tables[4];
 };
 
-uint16_t byteswap_16(uint16_t x) { return (x << 8) | (x >> 8); }
 uint16_t read_be_16(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
 uint8_t upper_half(uint8_t x) { return x >> 4; }
 uint8_t lower_half(uint8_t x) { return x & 0xF; }
+
+int decode_jpeg(FILE *f);
+int handle_app0(const uint8_t *payload);
+int handle_app1(const uint8_t *payload);
+int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state);
+int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state);
+int handle_sof0(const uint8_t *payload);
+int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f);
+
+// clang-format off
+const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
+  { 0,  1,  5,  6, 14, 15, 27, 28},
+  { 2,  4,  7, 13, 16, 26, 29, 42},
+  { 3,  8, 12, 17, 25, 30, 41, 43},
+  { 9, 11, 18, 24, 31, 40, 44, 53},
+  {10, 19, 23, 32, 39, 45, 52, 54},
+  {20, 22, 33, 38, 46, 51, 55, 60},
+  {21, 34, 37, 47, 50, 56, 59, 61},
+  {35, 36, 48, 49, 57, 58, 62, 63},
+};
+// clang-format on
+
+int main(int argc, char *argv[]) {
+  FILE *f = fopen("sample.jpg", "rb");
+  if (f == NULL) {
+    printf("Failed to open file\n");
+    return 1;
+  }
+  return decode_jpeg(f);
+}
+
+int decode_jpeg(FILE *f) {
+  struct JPEGState jpeg_state;
+  u_int8_t marker[2];
+  u_int16_t length;
+  u_int8_t *payload = NULL;
+
+  for (;;) {
+    fread(marker, 1, 2, f);
+    printf("%X%X ", marker[0], marker[1]);
+
+    if (marker[0] != 0xFF) {
+      printf("Not a marker\n");
+      return 1;
+    }
+
+    if (marker[1] == TEM | marker[1] == SOI | marker[1] == EOI | (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
+      length = 0;
+    } else {
+      if (fread(&length, 1, 2, f) < 2) {
+        printf("Failed to read data. Perhaps EOF?\n");
+        return 1;
+      }
+      length = read_be_16((const uint8_t *)&length);
+    }
+    if (length) {
+      // TODO: re-use payload buffer
+      // max buffer size?
+      payload = malloc(length - 2);
+      if (payload == NULL) {
+        printf("Failed to allocate memory\n");
+        return 1;
+      }
+      if (fread(payload, 1, length - 2, f) < length - 2) {
+        printf("Failed to read data. Perhaps EOF?\n");
+        return 1;
+      }
+    }
+
+    switch (marker[1]) {
+    case SOI:
+      printf("SOI");
+      break;
+
+    case APP0:
+      printf("APP0 (length = %d)\n", length);
+      if (handle_app0(payload))
+        return 1;
+      break;
+
+    case APP1:
+      printf("APP1 (length = %d)\n", length);
+      if (handle_app1(payload))
+        return 1;
+      break;
+
+    case DQT:
+      printf("DQT (length = %d)\n", length);
+      if (handle_dqt(payload, &jpeg_state))
+        return 1;
+      break;
+
+    case DHT:
+      printf("DHT (length = %d)\n", length);
+      if (handle_dht(payload, &jpeg_state))
+        return 1;
+      break;
+
+    case SOF0:
+      printf("SOF0 (length = %d)\n", length);
+      if (handle_sof0(payload))
+        return 1;
+      break;
+
+    case SOS:
+      printf("SOS\n");
+      if (handle_sos(payload, &jpeg_state, f))
+        return 1;
+      break;
+
+    default:
+      printf("Unknown marker (length = %d)\n", length);
+      break;
+    }
+
+    if (payload)
+      free(payload);
+    printf("\n");
+  }
+
+  return 0;
+}
 
 // JFIF i.e. JPEG Part 5
 int handle_app0(const uint8_t *payload) {
@@ -101,19 +222,6 @@ int handle_app1(const uint8_t *payload) {
 
   return 0;
 }
-
-// clang-format off
-const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
-  { 0,  1,  5,  6, 14, 15, 27, 28},
-  { 2,  4,  7, 13, 16, 26, 29, 42},
-  { 3,  8, 12, 17, 25, 30, 41, 43},
-  { 9, 11, 18, 24, 31, 40, 44, 53},
-  {10, 19, 23, 32, 39, 45, 52, 54},
-  {20, 22, 33, 38, 46, 51, 55, 60},
-  {21, 34, 37, 47, 50, 56, 59, 61},
-  {35, 36, 48, 49, 57, 58, 62, 63},
-};
-// clang-format on
 
 int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state) {
   uint8_t precision = upper_half(payload[0]);
@@ -184,12 +292,12 @@ int handle_sof0(const uint8_t *payload) {
   printf("  image dimension = (%d, %d)\n", width, height);
 
   for (int i = 0; i < n_channels; i++) {
-    uint8_t channel_identifier = payload[6 + i * 3];
+    uint8_t channel = payload[6 + i * 3];
     uint8_t x_sampling_factor = upper_half(payload[7 + i * 3]);
     uint8_t y_sampling_factor = lower_half(payload[7 + i * 3]);
     uint8_t q_table_identifier = payload[8 + i * 3];
 
-    printf("  channel %d\n", channel_identifier);
+    printf("  channel %d\n", channel);
     printf("    sampling_factor = (%d, %d)\n", x_sampling_factor, y_sampling_factor);
     printf("    q_table_identifier = %d\n", q_table_identifier);
   }
@@ -197,94 +305,35 @@ int handle_sof0(const uint8_t *payload) {
   return 0;
 }
 
-int main(int argc, char *argv[]) {
-  FILE *f = fopen("sample.jpg", "rb");
-  if (f == NULL) {
-    printf("Failed to open file\n");
-    return 1;
+int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
+  uint8_t n_channels = payload[0];
+  printf("  n_channels in scan = %d\n", n_channels);
+
+  for (int i = 0; i < n_channels; i++) {
+    uint8_t channel = payload[1 + i * 2];
+    uint8_t dc_coding_table = upper_half(payload[2 + i * 2]);
+    uint8_t ac_coding_table = lower_half(payload[2 + i * 2]);
+
+    printf("  channel %d\n", channel);
+    printf("    DC coding table = %d\n", dc_coding_table);
+    printf("    AC coding table = %d\n", ac_coding_table);
   }
 
-  struct JPEGState jpeg_state;
-  u_int8_t marker[2];
-  u_int16_t length;
-  u_int8_t *payload = NULL;
+  // not used by Baseline DCT
+  uint8_t ss = payload[1 + n_channels * 2];
+  uint8_t se = payload[2 + n_channels * 2];
+  uint8_t ah = payload[3 + n_channels * 2];
+  uint8_t al = payload[4 + n_channels * 2];
 
-  for (;;) {
-    fread(marker, 1, 2, f);
-    printf("%X%X ", marker[0], marker[1]);
+  printf("  ss = %d\n", ss);
+  printf("  se = %d\n", se);
+  printf("  ah = %d\n", ah);
+  printf("  al = %d\n", al);
 
-    if (marker[0] != 0xFF) {
-      printf("Not a marker\n");
-      return 1;
-    }
+  // not handle 16-bit image for now
+  uint8_t pred = 0;
 
-    if (marker[1] == TEM | marker[1] == SOI | marker[1] == EOI | (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
-      length = 0;
-    } else {
-      if (fread(&length, 1, 2, f) < 2) {
-        printf("Failed to read data. Perhaps EOF?\n");
-        return 1;
-      }
-      length = byteswap_16(length);
-    }
-    if (length) {
-      // TODO: re-use payload buffer
-      // max buffer size?
-      payload = malloc(length - 2);
-      if (payload == NULL) {
-        printf("Failed to allocate memory\n");
-        return 1;
-      }
-      if (fread(payload, 1, length - 2, f) < length - 2) {
-        printf("Failed to read data. Perhaps EOF?\n");
-        return 1;
-      }
-    }
-
-    switch (marker[1]) {
-    case SOI:
-      printf("SOI");
-      break;
-
-    case APP0:
-      printf("APP0 (length = %d)\n", length);
-      if (handle_app0(payload))
-        return 1;
-      break;
-
-    case APP1:
-      printf("APP1 (length = %d)\n", length);
-      if (handle_app1(payload))
-        return 1;
-      break;
-
-    case DQT:
-      printf("DQT (length = %d)\n", length);
-      if (handle_dqt(payload, &jpeg_state))
-        return 1;
-      break;
-
-    case DHT:
-      printf("DHT (length = %d)\n", length);
-      if (handle_dht(payload, &jpeg_state))
-        return 1;
-      break;
-
-    case SOF0:
-      printf("SOF0 (length = %d)\n", length);
-      if (handle_sof0(payload))
-        return 1;
-      break;
-
-    default:
-      printf("Unknown marker (length = %d)\n", length);
-      break;
-    }
-
-    if (payload)
-      free(payload);
-    printf("\n");
-  }
+  // not support restart interval RST
 
   return 0;
 }
