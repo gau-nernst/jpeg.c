@@ -106,9 +106,9 @@ int main(int argc, char *argv[]) {
 
 int decode_jpeg(FILE *f) {
   struct JPEGState jpeg_state;
-  u_int8_t marker[2];
-  u_int16_t length;
-  u_int8_t *payload = NULL;
+  uint8_t marker[2];
+  uint16_t length;
+  uint8_t *payload = NULL;
 
   for (;;) {
     fread(marker, 1, 2, f);
