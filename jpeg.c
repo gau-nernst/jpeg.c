@@ -83,7 +83,7 @@ struct JPEGState {
   uint8_t encoding;
   uint16_t width;
   uint16_t height;
-  uint8_t n_channels;
+  uint8_t n_components;
   struct QuantizationTable q_tables[4];
   struct HuffmanTable h_tables[4];
   void *image_buffer;
@@ -115,9 +115,14 @@ const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
 // clang-format on
 
 int main(int argc, char *argv[]) {
-  FILE *f = fopen("sample.jpg", "rb");
+  if (argc == 1) {
+    printf("No input\n");
+    return 1;
+  }
+
+  FILE *f = fopen(argv[1], "rb");
   if (f == NULL) {
-    printf("Failed to open file\n");
+    printf("Failed to open %s\n", argv[1]);
     return 1;
   }
   return decode_jpeg(f);
@@ -293,21 +298,22 @@ int handle_sof0(const uint8_t *payload, struct JPEGState *jpeg_state) {
   uint8_t precision = payload[0];
   jpeg_state->height = read_be_16(payload + 1);
   jpeg_state->width = read_be_16(payload + 3);
-  jpeg_state->n_channels = payload[5];
+  jpeg_state->n_components = payload[5];
 
-  try_malloc(jpeg_state->image_buffer, precision / 8 * jpeg_state->height * jpeg_state->width * jpeg_state->n_channels);
+  try_malloc(jpeg_state->image_buffer,
+             precision / 8 * jpeg_state->height * jpeg_state->width * jpeg_state->n_components);
 
   printf("  encoding = Baseline DCT\n");
   printf("  precision = %d-bit\n", precision);
   printf("  image dimension = (%d, %d)\n", jpeg_state->width, jpeg_state->height);
 
-  for (int i = 0; i < jpeg_state->n_channels; i++) {
-    uint8_t channel = payload[6 + i * 3];
+  for (int i = 0; i < jpeg_state->n_components; i++) {
+    uint8_t component = payload[6 + i * 3];
     uint8_t x_sampling_factor = upper_half(payload[7 + i * 3]);
     uint8_t y_sampling_factor = lower_half(payload[7 + i * 3]);
     uint8_t q_table_identifier = payload[8 + i * 3];
 
-    printf("  channel %d\n", channel);
+    printf("  component %d\n", component);
     printf("    sampling_factor = (%d, %d)\n", x_sampling_factor, y_sampling_factor);
     printf("    q_table_identifier = %d\n", q_table_identifier);
   }
@@ -316,24 +322,24 @@ int handle_sof0(const uint8_t *payload, struct JPEGState *jpeg_state) {
 }
 
 int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
-  uint8_t n_channels = payload[0];
-  printf("  n_channels in scan = %d\n", n_channels);
+  uint8_t n_components = payload[0];
+  printf("  n_components in scan = %d\n", n_components);
 
-  for (int i = 0; i < n_channels; i++) {
-    uint8_t channel = payload[1 + i * 2];
+  for (int i = 0; i < n_components; i++) {
+    uint8_t component = payload[1 + i * 2];
     uint8_t dc_coding_table = upper_half(payload[2 + i * 2]);
     uint8_t ac_coding_table = lower_half(payload[2 + i * 2]);
 
-    printf("  channel %d\n", channel);
+    printf("  component %d\n", component);
     printf("    DC coding table = %d\n", dc_coding_table);
     printf("    AC coding table = %d\n", ac_coding_table);
   }
 
   // not used by Baseline DCT
-  uint8_t ss = payload[1 + n_channels * 2];
-  uint8_t se = payload[2 + n_channels * 2];
-  uint8_t ah = payload[3 + n_channels * 2];
-  uint8_t al = payload[4 + n_channels * 2];
+  uint8_t ss = payload[1 + n_components * 2];
+  uint8_t se = payload[2 + n_components * 2];
+  uint8_t ah = payload[3 + n_components * 2];
+  uint8_t al = payload[4 + n_components * 2];
 
   printf("  ss = %d\n", ss);
   printf("  se = %d\n", se);
@@ -345,6 +351,11 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
   uint8_t pred = 0;
   uint8_t decode;
   uint8_t diff;
+
+  if (n_components == 1) {
+    printf("Decode 1-component scan is not implemented\n");
+    return 1;
+  }
 
   // assume 4:2:0 chroma-subsampling
   uint16_t n_mcus = ceil_div(jpeg_state->width, BLOCK_SIZE) * ceil_div(jpeg_state->height, BLOCK_SIZE) * 3 / 2;
