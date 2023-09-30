@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - run: curl ${{ env.sample_image_url }} -o sample.jpg
-      - run: ${{ matrix.cc }} jpeg.c -o jpeg && ./jpeg
+      - run: ${{ matrix.cc }} jpeg.c -o jpeg && ./jpeg sample.jpg
 
   test-windows:
     runs-on: windows-latest
@@ -30,4 +30,4 @@ jobs:
       - uses: actions/checkout@v3
       - run: curl ${{ env.sample_image_url }} -o sample.jpg
       - uses: ilammy/msvc-dev-cmd@v1
-      - run: cl jpeg.c && ./jpeg
+      - run: cl jpeg.c && ./jpeg sample.jpg
