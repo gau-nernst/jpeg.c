@@ -26,6 +26,9 @@ jobs:
       - name: Download sample image
         run: curl https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg420exif.jpg -o sample.jpg
 
+      - name: Setup MSVC on Windows
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Compile and Run
         run: |
           ${{ matrix.cc }} jpeg.c -o jpeg
