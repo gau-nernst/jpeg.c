@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Download sample image
-        run: wget https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg420exif.jpg -O sample.jpg
+        run: curl https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg420exif.jpg -o sample.jpg
 
       - name: Compile and Run
         run: |
