@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define BLOCK_SIZE 8
+
 // ITU-T.81, Table B.1
 const u_int8_t TEM = 0x01;
 
@@ -48,14 +50,159 @@ struct QuantizationTable {
   void *data;
 };
 
+struct HuffmanTable {
+  uint8_t code_lengths[16];
+  void *data;
+};
+
 struct JPEGState {
   unsigned int width;
   unsigned int height;
-  struct QuantizationTable dqt[4];
+  struct QuantizationTable q_tables[4];
+  struct HuffmanTable h_tables[4];
 };
 
 uint16_t byteswap_16(uint16_t x) { return (x << 8) | (x >> 8); }
-uint16_t read_be_16(uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
+uint16_t read_be_16(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
+uint8_t upper_half(uint8_t x) { return x >> 4; }
+uint8_t lower_half(uint8_t x) { return x & 0xF; }
+
+// JFIF i.e. JPEG Part 5
+int handle_app0(const uint8_t *payload) {
+  printf("  identifier = %.5s\n", payload); // either JFIF or JFXX
+
+  if (strcmp((const char *)payload, "JFIF") == 0) {
+    printf("  version = %d.%d\n", payload[5], payload[6]);
+    printf("  units = %d\n", payload[7]);
+    printf("  density = (%d, %d)\n", read_be_16(payload + 8), read_be_16(payload + 10));
+    printf("  thumbnail = (%d, %d)\n", payload[12], payload[13]);
+  } else if (strcmp((const char *)payload, "JFXX") == 0) {
+    printf("  extension_code = %X\n", payload[5]);
+  } else
+    printf("  Invalid identifier\n");
+
+  return 0;
+}
+
+int handle_app1(const uint8_t *payload) {
+  printf("  identifier = %s\n", payload);
+
+  if (strcmp((const char *)payload, "Exif") == 0) {
+    printf("  Exif detected\n");
+  } else
+    printf("  Invalid identifier\n");
+
+  return 0;
+}
+
+// clang-format off
+const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
+  { 0,  1,  5,  6, 14, 15, 27, 28},
+  { 2,  4,  7, 13, 16, 26, 29, 42},
+  { 3,  8, 12, 17, 25, 30, 41, 43},
+  { 9, 11, 18, 24, 31, 40, 44, 53},
+  {10, 19, 23, 32, 39, 45, 52, 54},
+  {20, 22, 33, 38, 46, 51, 55, 60},
+  {21, 34, 37, 47, 50, 56, 59, 61},
+  {35, 36, 48, 49, 57, 58, 62, 63},
+};
+// clang-format on
+
+int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state) {
+  uint8_t precision = upper_half(payload[0]);
+  uint8_t identifier = lower_half(payload[0]);
+
+  printf("  precision = %d (%d-bit)\n", precision, (precision + 1) * 8);
+  printf("  identifier = %d\n", identifier);
+
+  struct QuantizationTable *q_table = &(jpeg_state->q_tables[identifier]);
+  q_table->precision = precision;
+  q_table->data = malloc((precision + 1) * 64);
+  if (jpeg_state->q_tables[identifier].data == NULL) {
+    printf("Failed to allocate memory\n");
+    return 1;
+  }
+
+  if (precision) { // 16-bit
+    uint16_t *data = q_table->data;
+    for (int i = 0; i < 64; i++)
+      data[i] = read_be_16(payload + 1 + i * 2);
+
+    // TODO: make this into a macro to not repeat code?
+    for (int i = 0; i < BLOCK_SIZE; i++) {
+      printf(" ");
+      for (int j = 0; j < BLOCK_SIZE; j++)
+        printf(" %3d", data[ZIG_ZAG[i][j]]);
+      printf("\n");
+    }
+
+  } else {
+    uint8_t *data = q_table->data;
+    for (int i = 0; i < 64; i++)
+      data[i] = payload[1 + i];
+
+    for (int i = 0; i < BLOCK_SIZE; i++) {
+      printf(" ");
+      for (int j = 0; j < BLOCK_SIZE; j++)
+        printf(" %3d", data[ZIG_ZAG[i][j]]);
+      printf("\n");
+    }
+  }
+
+  return 0;
+}
+
+int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state) {
+  uint8_t class = upper_half(payload[0]);
+  uint8_t identifier = lower_half(payload[0]);
+
+  printf("  class = %d (%s)\n", class, class ? "AC" : "DC");
+  printf("  identifier = %d\n", identifier);
+
+  uint8_t *lengths = jpeg_state->h_tables[identifier].code_lengths;
+
+  int n_codes = 0;
+  for (int i = 0; i < 16; i++)
+    n_codes += (lengths[i] = payload[1 + i]);
+
+  uint8_t offset = 17;
+  for (int i = 0; i < 16; i++) {
+    if (lengths[i] == 0)
+      continue;
+
+    printf("  code length %d:", i);
+    for (int j = 0; j < lengths[i]; j++)
+      printf(" %d", payload[offset++]);
+    printf("\n");
+  }
+
+  return 0;
+}
+
+int handle_sof0(const uint8_t *payload) {
+  // Table B.2
+  uint8_t precision = payload[0];
+  uint16_t height = read_be_16(payload + 1);
+  uint16_t width = read_be_16(payload + 3);
+  uint8_t n_channels = payload[5];
+
+  printf("  encoding = Baseline DCT\n");
+  printf("  precision = %d-bit\n", precision);
+  printf("  image dimension = (%d, %d)\n", width, height);
+
+  for (int i = 0; i < n_channels; i++) {
+    uint8_t channel_identifier = payload[6 + i * 3];
+    uint8_t x_sampling_factor = upper_half(payload[7 + i * 3]);
+    uint8_t y_sampling_factor = lower_half(payload[7 + i * 3]);
+    uint8_t q_table_identifier = payload[8 + i * 3];
+
+    printf("  channel %d\n", channel_identifier);
+    printf("    sampling_factor = (%d, %d)\n", x_sampling_factor, y_sampling_factor);
+    printf("    q_table_identifier = %d\n", q_table_identifier);
+  }
+
+  return 0;
+}
 
 int main(int argc, char *argv[]) {
   FILE *f = fopen("sample.jpg", "rb");
@@ -87,8 +234,9 @@ int main(int argc, char *argv[]) {
       }
       length = byteswap_16(length);
     }
-    printf(" length = %5d ", length);
     if (length) {
+      // TODO: re-use payload buffer
+      // max buffer size?
       payload = malloc(length - 2);
       if (payload == NULL) {
         printf("Failed to allocate memory\n");
@@ -106,60 +254,37 @@ int main(int argc, char *argv[]) {
       break;
 
     case APP0:
-      // JFIF i.e. JPEG Part 5
-      printf("APP0\n");
-      printf("  identifier = %.5s\n", payload); // either JFIF or JFXX
-
-      if (strcmp((const char *)payload, "JFIF") == 0) {
-        printf("  version = %d.%d\n", payload[5], payload[6]);
-        printf("  units = %d\n", payload[7]);
-        printf("  density = (%d, %d)\n", read_be_16(payload + 8), read_be_16(payload + 10));
-        printf("  thumbnail = (%d, %d)\n", payload[12], payload[13]);
-      } else if (strcmp((const char *)payload, "JFXX") == 0) {
-        printf("  extension_code = %X\n", payload[5]);
-      } else
-        printf("  Invalid identifier\n");
+      printf("APP0 (length = %d)\n", length);
+      if (handle_app0(payload))
+        return 1;
       break;
 
     case APP1:
-      printf("APP1\n");
-      printf("  identifier = %s\n", payload);
-
-      if (strcmp((const char *)payload, "Exif") == 0) {
-        printf("  Exif detected\n");
-      } else
-        printf("  Invalid identifier\n");
+      printf("APP1 (length = %d)\n", length);
+      if (handle_app1(payload))
+        return 1;
       break;
 
     case DQT:
-      printf("DQT\n");
-      uint8_t precision = payload[0] >> 4;
-      uint8_t identifier = payload[0] & 0xF;
-
-      printf("  precision = %d (%d-bit)\n", precision, (precision + 1) * 8);
-      printf("  identifier = %d\n", identifier);
-
-      jpeg_state.dqt[identifier].precision = precision;
-      jpeg_state.dqt[identifier].data = malloc((precision + 1) * 64);
-      if (jpeg_state.dqt[identifier].data == NULL) {
-        printf("Failed to allocate memory\n");
+      printf("DQT (length = %d)\n", length);
+      if (handle_dqt(payload, &jpeg_state))
         return 1;
-      }
+      break;
 
-      if (precision) { // 16-bit
-        uint16_t *dqt = jpeg_state.dqt[identifier].data;
-        for (int i = 0; i < 64; i++)
-          dqt[i] = read_be_16(payload + 1 + i * 2);
-      } else {
-        uint8_t *dqt = jpeg_state.dqt[identifier].data;
-        for (int i = 0; i < 64; i++)
-          dqt[i] = payload[1 + i];
-      }
+    case DHT:
+      printf("DHT (length = %d)\n", length);
+      if (handle_dht(payload, &jpeg_state))
+        return 1;
+      break;
 
+    case SOF0:
+      printf("SOF0 (length = %d)\n", length);
+      if (handle_sof0(payload))
+        return 1;
       break;
 
     default:
-      printf("Unknown marker");
+      printf("Unknown marker (length = %d)\n", length);
       break;
     }
 
