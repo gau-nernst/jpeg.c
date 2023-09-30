@@ -16,6 +16,8 @@ jobs:
             cc: gcc
           - os: macos-latest
             cc: clang
+          - os: windows-latest
+            cc: cl
 
     steps:
       - name: Checkout
