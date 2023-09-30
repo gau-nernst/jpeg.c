@@ -5,26 +5,28 @@ on:
       - README.md
       - .gitignore
 
+env:
+  sample_image_url: https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg420exif.jpg
+
 jobs:
-  test:
+  test-unix:
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             cc: gcc
           - os: macos-latest
             cc: clang
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
+      - run: curl ${{ env.sample_image_url }} -o sample.jpg
+      - run: ${{ matrix.cc }} jpeg.c -o jpeg && ./jpeg
 
-      - name: Download sample image
-        run: wget https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg420exif.jpg -O sample.jpg
-
-      - name: Compile and Run
-        run: |
-          ${{ matrix.cc }} jpeg.c -o jpeg
-          ./jpeg
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: curl ${{ env.sample_image_url }} -o sample.jpg
+      - uses: ilammy/msvc-dev-cmd@v1
+      - run: cl jpeg.c && ./jpeg
