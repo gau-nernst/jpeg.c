@@ -43,59 +43,32 @@ const u_int8_t APP1 = 0xE1;
 
 const u_int8_t COM = 0xFE;
 
-// assume system is little-endian
-uint16_t parse_2_bytes(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
+struct QuantizationTable {
+  uint8_t precision;
+  void *data;
+};
 
-void handle_sof(const u_int8_t *payload) { printf("SOI"); }
+struct JPEGState {
+  unsigned int width;
+  unsigned int height;
+  struct QuantizationTable dqt[4];
+};
 
-// JFIF i.e. JPEG Part 5
-void handle_app0(const u_int8_t *payload) {
-  printf("APP0\n");
-  printf("  identifier = %.5s\n", payload); // either JFIF or JFXX
-
-  if (strcmp((const char *)payload, "JFIF") == 0) {
-    printf("  version = %d.%d\n", payload[5], payload[6]);
-    printf("  units = %d\n", payload[7]);
-    printf("  density = (%d, %d)\n", parse_2_bytes(payload + 8), parse_2_bytes(payload + 10));
-    printf("  thumbnail = (%d, %d)\n", payload[12], payload[13]);
-  } else if (strcmp((const char *)payload, "JFXX") == 0) {
-    printf("  extension_code = %X\n", payload[5]);
-  } else
-    printf("  Invalid identifier\n");
-}
-
-// exif
-void handle_app1(const u_int8_t *payload) {
-  printf("APP1\n");
-  printf("  identifier = %s\n", payload);
-
-  if (strcmp((const char *)payload, "Exif") == 0) {
-    printf("  Exif detected\n");
-  } else
-    printf("  Invalid identifier\n");
-}
-
-void handle_dqt(const u_int8_t *payload) {
-  printf("DQT\n");
-  int precision = payload[0] >> 4;
-  int identifier = payload[0] & 0xF;
-
-  printf("  precision = %d\n", precision);
-  printf("  identifier = %d\n", identifier);
-}
-
-void handle_unknown(const u_int8_t *payload) { printf("Unknown marker"); }
+uint16_t byteswap_16(uint16_t x) { return (x << 8) | (x >> 8); }
+uint16_t read_be_16(uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
 
 int main(int argc, char *argv[]) {
   FILE *f = fopen("sample.jpg", "rb");
   if (f == NULL) {
-    printf("Error");
+    printf("Failed to open file\n");
     return 1;
   }
 
+  struct JPEGState jpeg_state;
   u_int8_t marker[2];
   u_int16_t length;
   u_int8_t *payload = NULL;
+
   for (;;) {
     fread(marker, 1, 2, f);
     printf("%X%X ", marker[0], marker[1]);
@@ -108,8 +81,11 @@ int main(int argc, char *argv[]) {
     if (marker[1] == TEM | marker[1] == SOI | marker[1] == EOI | (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
       length = 0;
     } else {
-      fread(&length, 1, 2, f);
-      length = parse_2_bytes((const uint8_t *)&length);
+      if (fread(&length, 1, 2, f) < 2) {
+        printf("Failed to read data. Perhaps EOF?\n");
+        return 1;
+      }
+      length = byteswap_16(length);
     }
     printf(" length = %5d ", length);
     if (length) {
@@ -118,28 +94,72 @@ int main(int argc, char *argv[]) {
         printf("Failed to allocate memory\n");
         return 1;
       }
-      fread(payload, 1, length - 2, f);
+      if (fread(payload, 1, length - 2, f) < length - 2) {
+        printf("Failed to read data. Perhaps EOF?\n");
+        return 1;
+      }
     }
 
     switch (marker[1]) {
     case SOI:
-      handle_sof(payload);
+      printf("SOI");
       break;
 
     case APP0:
-      handle_app0(payload);
+      // JFIF i.e. JPEG Part 5
+      printf("APP0\n");
+      printf("  identifier = %.5s\n", payload); // either JFIF or JFXX
+
+      if (strcmp((const char *)payload, "JFIF") == 0) {
+        printf("  version = %d.%d\n", payload[5], payload[6]);
+        printf("  units = %d\n", payload[7]);
+        printf("  density = (%d, %d)\n", read_be_16(payload + 8), read_be_16(payload + 10));
+        printf("  thumbnail = (%d, %d)\n", payload[12], payload[13]);
+      } else if (strcmp((const char *)payload, "JFXX") == 0) {
+        printf("  extension_code = %X\n", payload[5]);
+      } else
+        printf("  Invalid identifier\n");
       break;
 
     case APP1:
-      handle_app1(payload);
+      printf("APP1\n");
+      printf("  identifier = %s\n", payload);
+
+      if (strcmp((const char *)payload, "Exif") == 0) {
+        printf("  Exif detected\n");
+      } else
+        printf("  Invalid identifier\n");
       break;
 
     case DQT:
-      handle_dqt(payload);
+      printf("DQT\n");
+      uint8_t precision = payload[0] >> 4;
+      uint8_t identifier = payload[0] & 0xF;
+
+      printf("  precision = %d (%d-bit)\n", precision, (precision + 1) * 8);
+      printf("  identifier = %d\n", identifier);
+
+      jpeg_state.dqt[identifier].precision = precision;
+      jpeg_state.dqt[identifier].data = malloc((precision + 1) * 64);
+      if (jpeg_state.dqt[identifier].data == NULL) {
+        printf("Failed to allocate memory\n");
+        return 1;
+      }
+
+      if (precision) { // 16-bit
+        uint16_t *dqt = jpeg_state.dqt[identifier].data;
+        for (int i = 0; i < 64; i++)
+          dqt[i] = read_be_16(payload + 1 + i * 2);
+      } else {
+        uint8_t *dqt = jpeg_state.dqt[identifier].data;
+        for (int i = 0; i < 64; i++)
+          dqt[i] = payload[1 + i];
+      }
+
       break;
 
     default:
-      handle_unknown(payload);
+      printf("Unknown marker");
       break;
     }
 
@@ -147,4 +167,6 @@ int main(int argc, char *argv[]) {
       free(payload);
     printf("\n");
   }
+
+  return 0;
 }
