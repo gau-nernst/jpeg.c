@@ -1,4 +1,3 @@
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,45 +12,45 @@
   }
 
 // ITU-T.81, Table B.1
-const u_int8_t TEM = 0x01;
+#define TEM 0x01
 
-const u_int8_t SOF0 = 0xC0;
-const u_int8_t SOF1 = 0xC1;
-const u_int8_t SOF2 = 0xC2;
-const u_int8_t SOF3 = 0xC3;
+#define SOF0 0xC0
+#define SOF1 0xC1
+#define SOF2 0xC2
+#define SOF3 0xC3
 
-const u_int8_t DHT = 0xC4;
+#define DHT 0xC4
 
-const u_int8_t SOF5 = 0xC5;
-const u_int8_t SOF6 = 0xC6;
-const u_int8_t SOF7 = 0xC7;
+#define SOF5 0xC5
+#define SOF6 0xC6
+#define SOF7 0xC7
 
-const u_int8_t JPG = 0xC8;
-const u_int8_t SOF9 = 0xC9;
-const u_int8_t SOF10 = 0xCA;
-const u_int8_t SOF11 = 0xCB;
+#define JPG 0xC8
+#define SOF9 0xC9
+#define SOF10 0xCA
+#define SOF11 0xCB
 
-const u_int8_t DAC = 0xCC;
+#define DAC 0xCC
 
-const u_int8_t SOF13 = 0xCD;
-const u_int8_t SOF14 = 0xCE;
-const u_int8_t SOF15 = 0xCF;
+#define SOF13 0xC
+#define SOF14 0xC
+#define SOF15 0xC
 
-const u_int8_t RST0 = 0xD0;
+#define RST0 0xD0
 
-const u_int8_t SOI = 0xD8;
-const u_int8_t EOI = 0xD9;
-const u_int8_t SOS = 0xDA;
-const u_int8_t DQT = 0xDB;
-const u_int8_t DNL = 0xDC;
-const u_int8_t DRI = 0xDD;
-const u_int8_t DHP = 0xDE;
-const u_int8_t EXP = 0xDF;
+#define SOI 0xD8
+#define EOI 0xD9
+#define SOS 0xDA
+#define DQT 0xDB
+#define DNL 0xDC
+#define DRI 0xDD
+#define DHP 0xDE
+#define EXP 0xDF
 
-const u_int8_t APP0 = 0xE0;
-const u_int8_t APP1 = 0xE1;
+#define APP0 0xE0
+#define APP1 0xE1
 
-const u_int8_t COM = 0xFE;
+#define COM 0xFE
 
 struct QuantizationTable {
   uint8_t precision;
