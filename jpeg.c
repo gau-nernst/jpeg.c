@@ -27,6 +27,7 @@
 
 // https://stackoverflow.com/a/2745086
 #define ceil_div(x, y) (((x)-1) / (y) + 1)
+#define max(x, y) (((x) > (y)) ? (x) : (y))
 
 // ITU-T.81, Table B.1
 #define TEM 0x01
@@ -79,6 +80,14 @@ struct HuffmanTable {
   void *data;
 };
 
+struct Component {
+  uint8_t x_sampling_factor;
+  uint8_t y_sampling_factor;
+  uint8_t q_table_id;
+  uint8_t dc_coding_table_id;
+  uint8_t ac_coding_table_id;
+};
+
 struct JPEGState {
   uint8_t encoding;
   uint16_t width;
@@ -86,6 +95,7 @@ struct JPEGState {
   uint8_t n_components;
   struct QuantizationTable q_tables[4];
   struct HuffmanTable h_tables[4];
+  struct Component *components;
   void *image_buffer;
 };
 
@@ -300,6 +310,7 @@ int handle_sof0(const uint8_t *payload, struct JPEGState *jpeg_state) {
   jpeg_state->width = read_be_16(payload + 3);
   jpeg_state->n_components = payload[5];
 
+  try_malloc(jpeg_state->components, sizeof(struct Component) * jpeg_state->n_components);
   try_malloc(jpeg_state->image_buffer,
              precision / 8 * jpeg_state->height * jpeg_state->width * jpeg_state->n_components);
 
@@ -308,60 +319,62 @@ int handle_sof0(const uint8_t *payload, struct JPEGState *jpeg_state) {
   printf("  image dimension = (%d, %d)\n", jpeg_state->width, jpeg_state->height);
 
   for (int i = 0; i < jpeg_state->n_components; i++) {
-    uint8_t component = payload[6 + i * 3];
-    uint8_t x_sampling_factor = upper_half(payload[7 + i * 3]);
-    uint8_t y_sampling_factor = lower_half(payload[7 + i * 3]);
-    uint8_t q_table_identifier = payload[8 + i * 3];
+    uint8_t component_id = payload[6 + i * 3]; // this should be i+1, according to JFIF
+    struct Component *component = jpeg_state->components + component_id - 1;
+    component->x_sampling_factor = upper_half(payload[7 + i * 3]);
+    component->y_sampling_factor = lower_half(payload[7 + i * 3]);
+    component->q_table_id = payload[8 + i * 3];
 
-    printf("  component %d\n", component);
-    printf("    sampling_factor = (%d, %d)\n", x_sampling_factor, y_sampling_factor);
-    printf("    q_table_identifier = %d\n", q_table_identifier);
+    printf("  component %d\n", component_id);
+    printf("    sampling_factor = (%d, %d)\n", component->x_sampling_factor, component->y_sampling_factor);
+    printf("    q_table_identifier = %d\n", component->q_table_id);
   }
 
   return 0;
 }
 
 int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
-  uint8_t n_components = payload[0];
+  uint8_t n_components = payload[0]; // number of components in this scan
   printf("  n_components in scan = %d\n", n_components);
 
   for (int i = 0; i < n_components; i++) {
-    uint8_t component = payload[1 + i * 2];
-    uint8_t dc_coding_table = upper_half(payload[2 + i * 2]);
-    uint8_t ac_coding_table = lower_half(payload[2 + i * 2]);
+    uint8_t component_id = payload[1 + i * 2];
+    struct Component *component = jpeg_state->components + component_id - 1;
+    component->dc_coding_table_id = upper_half(payload[2 + i * 2]);
+    component->ac_coding_table_id = lower_half(payload[2 + i * 2]);
 
-    printf("  component %d\n", component);
-    printf("    DC coding table = %d\n", dc_coding_table);
-    printf("    AC coding table = %d\n", ac_coding_table);
+    printf("  component %d\n", component_id);
+    printf("    DC coding table = %d\n", component->dc_coding_table_id);
+    printf("    AC coding table = %d\n", component->ac_coding_table_id);
   }
 
   // not used by Baseline DCT
-  uint8_t ss = payload[1 + n_components * 2];
-  uint8_t se = payload[2 + n_components * 2];
-  uint8_t ah = payload[3 + n_components * 2];
-  uint8_t al = payload[4 + n_components * 2];
-
-  printf("  ss = %d\n", ss);
-  printf("  se = %d\n", se);
-  printf("  ah = %d\n", ah);
-  printf("  al = %d\n", al);
+  printf("  ss = %d\n", payload[1 + n_components * 2]);
+  printf("  se = %d\n", payload[2 + n_components * 2]);
+  printf("  ah = %d\n", payload[3 + n_components * 2]);
+  printf("  al = %d\n", payload[4 + n_components * 2]);
 
   // decode scan
   // don't support 16-bit image for now
-  uint8_t pred = 0;
-  uint8_t decode;
-  uint8_t diff;
+  uint8_t pred = 0, decode, diff;
 
   if (n_components == 1) {
     printf("Decode 1-component scan is not implemented\n");
     return 1;
   }
 
-  // assume 4:2:0 chroma-subsampling
-  uint16_t n_mcus = ceil_div(jpeg_state->width, BLOCK_SIZE) * ceil_div(jpeg_state->height, BLOCK_SIZE) * 3 / 2;
+  // calculate number of MCUs based on chroma-subsampling
+  uint16_t top, bottom;
+  for (int i = 0; i < jpeg_state->n_components; i++) {
+    struct Component *component = jpeg_state->components + i;
+    uint16_t ref = component->x_sampling_factor * component->y_sampling_factor;
+    top += ref;
+    bottom = max(bottom, ref); // max
+  }
+  uint16_t n_mcu = ceil_div(jpeg_state->width, BLOCK_SIZE) * ceil_div(jpeg_state->height, BLOCK_SIZE) * top / bottom;
 
   // refer to T.81 Table A.2 for MCU packing order
-  for (int i = 0; i < n_mcus; i++) {
+  for (int i = 0; i < n_mcu; i++) {
     // decode DC
     try_fread(&decode, 1, 1, f);
 
