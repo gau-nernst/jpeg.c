@@ -6,30 +6,32 @@ on:
       - .gitignore
 
 jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            cc: gcc
-          - os: macos-latest
-            cc: clang
-          - os: windows-latest
-            cc: cl
-
+  test-ubuntu:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - &checkout
+        name: Checkout
         uses: actions/checkout@v3
-
-      - name: Download sample image
+      - &download_image
+        name: Download sample image
         run: curl https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg420exif.jpg -o sample.jpg
+      - name: Compile and Run
+        run: gcc jpeg.c -o jpeg && ./jpeg
 
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - *checkout
+      - *download_image
+      - name: Compile and Run
+        run: clang jpeg.c -o jpeg && ./jpeg
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - *checkout
+      - *download_image
       - name: Setup MSVC on Windows
         uses: ilammy/msvc-dev-cmd@v1
-
       - name: Compile and Run
-        run: |
-          ${{ matrix.cc }} jpeg.c -o jpeg
-          ./jpeg
+        run: cl jpeg.c && ./jpeg
