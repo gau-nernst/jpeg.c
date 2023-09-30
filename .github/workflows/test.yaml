@@ -1,0 +1,30 @@
+name: Test
+on:
+  push:
+    paths-ignore:
+      - README.md
+      - .gitignore
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cc: gcc
+          - os: macos-latest
+            cc: clang
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Download sample image
+        run: wget https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg420exif.jpg -O sample.jpg
+
+      - name: Compile and Run
+        run: |
+          ${{ matrix.cc }} jpeg.c -o jpeg
+          ./jpeg
