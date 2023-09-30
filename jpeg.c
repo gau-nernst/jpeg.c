@@ -3,6 +3,13 @@
 #include <string.h>
 
 #define BLOCK_SIZE 8
+#define print_q_table(table)                                                                                           \
+  for (int i = 0; i < BLOCK_SIZE; i++) {                                                                               \
+    printf(" ");                                                                                                       \
+    for (int j = 0; j < BLOCK_SIZE; j++)                                                                               \
+      printf(" %3d", table[ZIG_ZAG[i][j]]);                                                                            \
+    printf("\n");                                                                                                      \
+  }
 
 // ITU-T.81, Table B.1
 const u_int8_t TEM = 0x01;
@@ -127,26 +134,12 @@ int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state) {
     uint16_t *data = q_table->data;
     for (int i = 0; i < 64; i++)
       data[i] = read_be_16(payload + 1 + i * 2);
-
-    // TODO: make this into a macro to not repeat code?
-    for (int i = 0; i < BLOCK_SIZE; i++) {
-      printf(" ");
-      for (int j = 0; j < BLOCK_SIZE; j++)
-        printf(" %3d", data[ZIG_ZAG[i][j]]);
-      printf("\n");
-    }
-
+    print_q_table(data)
   } else {
     uint8_t *data = q_table->data;
     for (int i = 0; i < 64; i++)
       data[i] = payload[1 + i];
-
-    for (int i = 0; i < BLOCK_SIZE; i++) {
-      printf(" ");
-      for (int j = 0; j < BLOCK_SIZE; j++)
-        printf(" %3d", data[ZIG_ZAG[i][j]]);
-      printf("\n");
-    }
+    print_q_table(data)
   }
 
   return 0;
