@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - run: curl ${{ env.sample_image_url }} -o sample.jpg
-      - run: ${{ cc }} jpeg.c -o jpeg && ./jpeg
+      - run: ${{ matrix.cc }} jpeg.c -o jpeg && ./jpeg
 
   test-windows:
     runs-on: windows-latest
