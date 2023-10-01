@@ -4,6 +4,7 @@
 #include <string.h>
 
 #define BLOCK_SIZE 8
+#define HUFFMAN_SIZE 16
 
 #define try_malloc(ptr, size)                                                                                          \
   if ((ptr = malloc(size)) == NULL) {                                                                                  \
@@ -17,10 +18,10 @@
     return 1;                                                                                                          \
   }
 
-#define print_list(prefix, ptr, length)                                                                                 \
-  printf(prefix);                                                                                                       \
+#define print_list(prefix, ptr, length)                                                                                \
+  printf(prefix);                                                                                                      \
   for (int i = 0; i < (length); i++)                                                                                   \
-    printf(" %d", (ptr)[i]);                                                                                           \
+    printf(" %3d", (ptr)[i]);                                                                                          \
   printf("\n");
 
 // https://stackoverflow.com/a/2745086
@@ -72,9 +73,9 @@ struct HuffmanTable {
   uint8_t *huffsize;
   uint16_t *huffcode;
   uint8_t *huffval;
-  uint8_t mincode;
-  uint8_t maxcode;
-  uint8_t *valptr;
+  uint16_t mincode[HUFFMAN_SIZE];
+  uint16_t maxcode[HUFFMAN_SIZE];
+  uint8_t valptr[HUFFMAN_SIZE];
 };
 
 struct Component {
@@ -282,27 +283,41 @@ int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state) {
   // ITU-T.81 Annex C: create Huffman table
   struct HuffmanTable *h_table = &(jpeg_state->h_tables[identifier]);
   int n_codes = 0;
-  for (int i = 0; i < 16; i++)
+  for (int i = 0; i < HUFFMAN_SIZE; i++)
     n_codes += payload[1 + i];
   try_malloc(h_table->huffsize, n_codes);
   try_malloc(h_table->huffcode, n_codes * 2);
   try_malloc(h_table->huffval, n_codes);
 
   // Figure C.1 and C.2
-  for (int i = 0, k = 0, code = 0; i < 16; i++) {
+  for (int i = 0, k = 0, code = 0; i < HUFFMAN_SIZE; i++) {
     for (int j = 0; j < payload[1 + i]; j++, k++, code++) {
       h_table->huffsize[k] = i;
       h_table->huffcode[k] = code;
-      h_table->huffval[k] = payload[17 + k];
+      h_table->huffval[k] = payload[1 + HUFFMAN_SIZE + k];
     }
     code = code << 1;
   }
 
-  printf("  n_codes = %d\n", n_codes);
-  print_list("  BITS =", payload + 1, 16);
+  // Figure F.16
+  for (int i = 0, j = 0; i < HUFFMAN_SIZE; i++)
+    if (payload[1 + i]) {
+      h_table->valptr[i] = j;
+      h_table->mincode[i] = h_table->huffcode[j];
+      h_table->maxcode[i] = h_table->huffcode[j + payload[1 + i] - 1];
+      j += payload[1 + i];
+    } else
+      h_table->mincode[i] = h_table->maxcode[i] = h_table->valptr[i] = 0;
+
+  printf("  n_codes = %d\n\n", n_codes);
+  print_list("  BITS     =", payload + 1, HUFFMAN_SIZE);
   print_list("  HUFFSIZE =", h_table->huffsize, n_codes);
   print_list("  HUFFCODE =", h_table->huffcode, n_codes);
-  print_list("  HUFFVAL =", h_table->huffval, n_codes);
+  print_list("  HUFFVAL  =", h_table->huffval, n_codes);
+  printf("\n");
+  print_list("  MINCODE  =", h_table->mincode, HUFFMAN_SIZE);
+  print_list("  MAXCODE  =", h_table->maxcode, HUFFMAN_SIZE);
+  print_list("  VALPTR   =", h_table->valptr, HUFFMAN_SIZE);
 
   return 0;
 }
@@ -380,6 +395,7 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
   uint16_t n_mcu = ceil_div(jpeg_state->width, BLOCK_SIZE) * ceil_div(jpeg_state->height, BLOCK_SIZE) * top / bottom;
 
   // refer to T.81 Table A.2 for MCU packing order
+  // F.2.2
   for (int i = 0; i < n_mcu; i++) {
     // decode DC
     try_fread(&decode, 1, 1, f);
