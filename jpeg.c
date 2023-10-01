@@ -17,9 +17,11 @@
     return 1;                                                                                                          \
   }
 
-#define print_list(ptr, length)                                                                                        \
+#define print_list(prefix, ptr, length)                                                                                 \
+  printf(prefix);                                                                                                       \
   for (int i = 0; i < (length); i++)                                                                                   \
-    printf(" %d", (ptr)[i]);
+    printf(" %d", (ptr)[i]);                                                                                           \
+  printf("\n");
 
 // https://stackoverflow.com/a/2745086
 #define ceil_div(x, y) (((x)-1) / (y) + 1)
@@ -67,8 +69,8 @@
 #define COM 0xFE
 
 struct HuffmanTable {
-  uint8_t *huffsize; // TODO: check data size
-  uint8_t *huffcode;
+  uint8_t *huffsize;
+  uint16_t *huffcode;
   uint8_t *huffval;
   uint8_t mincode;
   uint8_t maxcode;
@@ -279,37 +281,28 @@ int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state) {
 
   // ITU-T.81 Annex C: create Huffman table
   struct HuffmanTable *h_table = &(jpeg_state->h_tables[identifier]);
-
-  // first pass: determine the size for hufsize
   int n_codes = 0;
   for (int i = 0; i < 16; i++)
     n_codes += payload[1 + i];
+  try_malloc(h_table->huffsize, n_codes);
+  try_malloc(h_table->huffcode, n_codes * 2);
+  try_malloc(h_table->huffval, n_codes);
+
+  // Figure C.1 and C.2
+  for (int i = 0, k = 0, code = 0; i < 16; i++) {
+    for (int j = 0; j < payload[1 + i]; j++, k++, code++) {
+      h_table->huffsize[k] = i;
+      h_table->huffcode[k] = code;
+      h_table->huffval[k] = payload[17 + k];
+    }
+    code = code << 1;
+  }
 
   printf("  n_codes = %d\n", n_codes);
-  printf("  BITS =");
-  print_list(payload + 1, 16);
-  printf("\n");
-
-  // second pass: build huffsize table (Figure C.1)
-  try_malloc(h_table->huffsize, n_codes);
-  for (int i = 0, k = 0; i < 16; i++)
-    for (int j = 0; j < payload[1 + i]; j++)
-      h_table->huffsize[k++] = i;
-
-  printf("  HUFFSIZE =");
-  print_list(h_table->huffsize, n_codes);
-  printf("\n");
-
-  // uint8_t offset = 17;
-  // for (int i = 0; i < 16; i++) {
-  //   if (lengths[i] == 0)
-  //     continue;
-
-  //   printf("  code length %d:", i);
-  //   for (int j = 0; j < lengths[i]; j++)
-  //     printf(" %d", payload[offset++]);
-  //   printf("\n");
-  // }
+  print_list("  BITS =", payload + 1, 16);
+  print_list("  HUFFSIZE =", h_table->huffsize, n_codes);
+  print_list("  HUFFCODE =", h_table->huffcode, n_codes);
+  print_list("  HUFFVAL =", h_table->huffval, n_codes);
 
   return 0;
 }
