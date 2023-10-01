@@ -17,13 +17,9 @@
     return 1;                                                                                                          \
   }
 
-#define print_q_table(table)                                                                                           \
-  for (int i = 0; i < BLOCK_SIZE; i++) {                                                                               \
-    printf(" ");                                                                                                       \
-    for (int j = 0; j < BLOCK_SIZE; j++)                                                                               \
-      printf(" %3d", table[ZIG_ZAG[i][j]]);                                                                            \
-    printf("\n");                                                                                                      \
-  }
+#define print_list(ptr, length)                                                                                        \
+  for (int i = 0; i < (length); i++)                                                                                   \
+    printf(" %d", (ptr)[i]);
 
 // https://stackoverflow.com/a/2745086
 #define ceil_div(x, y) (((x)-1) / (y) + 1)
@@ -70,14 +66,13 @@
 
 #define COM 0xFE
 
-struct QuantizationTable {
-  uint8_t precision;
-  void *data;
-};
-
 struct HuffmanTable {
-  uint8_t code_lengths[16];
-  void *data;
+  uint8_t *huffsize; // TODO: check data size
+  uint8_t *huffcode;
+  uint8_t *huffval;
+  uint8_t mincode;
+  uint8_t maxcode;
+  uint8_t *valptr;
 };
 
 struct Component {
@@ -93,7 +88,7 @@ struct JPEGState {
   uint16_t width;
   uint16_t height;
   uint8_t n_components;
-  struct QuantizationTable q_tables[4];
+  uint16_t q_tables[4][BLOCK_SIZE * BLOCK_SIZE];
   struct HuffmanTable h_tables[4];
   struct Component *components;
   void *image_buffer;
@@ -255,25 +250,26 @@ int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state) {
   printf("  precision = %d (%d-bit)\n", precision, (precision + 1) * 8);
   printf("  identifier = %d\n", identifier);
 
-  struct QuantizationTable *q_table = &(jpeg_state->q_tables[identifier]);
-  q_table->precision = precision;
-  try_malloc(q_table->data, (precision + 1) * 64);
-
-  if (precision) { // 16-bit
-    uint16_t *data = q_table->data;
-    for (int i = 0; i < 64; i++)
-      data[i] = read_be_16(payload + 1 + i * 2);
-    print_q_table(data);
+  uint16_t *q_table = jpeg_state->q_tables[identifier];
+  if (precision) {
+    for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++)
+      q_table[i] = read_be_16(payload + 1 + i * 2);
   } else {
-    uint8_t *data = q_table->data;
-    for (int i = 0; i < 64; i++)
-      data[i] = payload[1 + i];
-    print_q_table(data);
+    for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++)
+      q_table[i] = payload[1 + i];
+  }
+
+  for (int i = 0; i < BLOCK_SIZE; i++) {
+    printf("  ");
+    for (int j = 0; j < BLOCK_SIZE; j++)
+      printf(" %3d", q_table[ZIG_ZAG[i][j]]);
+    printf("\n");
   }
 
   return 0;
 }
 
+// ITU-T.81 B.2.4.2
 int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state) {
   uint8_t class = upper_half(payload[0]);
   uint8_t identifier = lower_half(payload[0]);
@@ -281,22 +277,39 @@ int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state) {
   printf("  class = %d (%s)\n", class, class ? "AC" : "DC");
   printf("  identifier = %d\n", identifier);
 
-  uint8_t *lengths = jpeg_state->h_tables[identifier].code_lengths;
+  // ITU-T.81 Annex C: create Huffman table
+  struct HuffmanTable *h_table = &(jpeg_state->h_tables[identifier]);
 
+  // first pass: determine the size for hufsize
   int n_codes = 0;
   for (int i = 0; i < 16; i++)
-    n_codes += (lengths[i] = payload[1 + i]);
+    n_codes += payload[1 + i];
 
-  uint8_t offset = 17;
-  for (int i = 0; i < 16; i++) {
-    if (lengths[i] == 0)
-      continue;
+  printf("  n_codes = %d\n", n_codes);
+  printf("  BITS =");
+  print_list(payload + 1, 16);
+  printf("\n");
 
-    printf("  code length %d:", i);
-    for (int j = 0; j < lengths[i]; j++)
-      printf(" %d", payload[offset++]);
-    printf("\n");
-  }
+  // second pass: build huffsize table (Figure C.1)
+  try_malloc(h_table->huffsize, n_codes);
+  for (int i = 0, k = 0; i < 16; i++)
+    for (int j = 0; j < payload[1 + i]; j++)
+      h_table->huffsize[k++] = i;
+
+  printf("  HUFFSIZE =");
+  print_list(h_table->huffsize, n_codes);
+  printf("\n");
+
+  // uint8_t offset = 17;
+  // for (int i = 0; i < 16; i++) {
+  //   if (lengths[i] == 0)
+  //     continue;
+
+  //   printf("  code length %d:", i);
+  //   for (int j = 0; j < lengths[i]; j++)
+  //     printf(" %d", payload[offset++]);
+  //   printf("\n");
+  // }
 
   return 0;
 }
