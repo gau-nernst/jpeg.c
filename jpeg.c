@@ -109,9 +109,9 @@ int handle_dht(const uint8_t *, struct JPEGState *);
 int handle_sof0(const uint8_t *, struct JPEGState *);
 int handle_sos(const uint8_t *, struct JPEGState *, FILE *);
 
-uint8_t extend(uint8_t, uint8_t);
-uint8_t decode(FILE *, struct HuffmanTable *);
-uint8_t receive(FILE *, uint8_t);
+uint16_t extend(uint16_t, uint16_t);
+uint16_t decode(FILE *, struct HuffmanTable *);
+uint16_t receive(FILE *, uint16_t);
 uint8_t nextbit(FILE *);
 
 // clang-format off
@@ -390,28 +390,46 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
   }
   uint16_t n_mcu = ceil_div(jpeg_state->width, BLOCK_SIZE) * ceil_div(jpeg_state->height, BLOCK_SIZE) * top / bottom;
 
-  // don't support 16-bit image for now
-  uint8_t pred = 0, diff, t;
+  uint16_t pred = 0, diff, t;
 
   if (n_components == 1) {
     printf("Decode 1-component scan is not implemented\n");
     return 1;
   }
 
+  uint16_t dct_coefs[BLOCK_SIZE * BLOCK_SIZE] = {0};
+
   // refer to T.81 Table A.2 for MCU packing order
   // F.2.2
   for (int i = 0; i < n_mcu; i++) {
     for (int c = 0; c < n_components; c++) {
       struct Component *component = &jpeg_state->components[payload[1 + c * 2] - 1];
+      struct HuffmanTable *h_table = &jpeg_state->h_tables[component->dc_coding_table_id];
+
       for (int x = 0; x < component->x_sampling_factor; x++) {
         for (int y = 0; y < component->y_sampling_factor; y++) {
           // decode DC: F.2.2.1
-          t = decode(f, &jpeg_state->h_tables[component->dc_coding_table_id]);
+          t = decode(f, h_table);
           diff = receive(f, t);
           diff = extend(diff, t);
           pred += diff;
+          dct_coefs[0] = pred;
 
-          // decode AC
+          // decode AC: F.2.2.2
+          int k = 1;
+          while (k < BLOCK_SIZE * BLOCK_SIZE) {
+            uint16_t rs = decode(f, h_table);
+            if (rs == 0xF0) // ZRL - zero run length
+              k += 16;
+            else if (rs == 0x00) // EOB - end of block
+              break;
+            else {
+              uint16_t ssss = lower_half(rs);
+              uint16_t rrrr = upper_half(rs);
+              k += rrrr;
+              dct_coefs[k] = extend(receive(f, ssss), ssss);
+            }
+          }
         }
       }
     }
@@ -421,11 +439,11 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
 }
 
 // Figure F.12
-uint8_t extend(uint8_t v, uint8_t t) { return v < (1 << (t - 1)) ? v + (-1 << t) + 1 : v; }
+uint16_t extend(uint16_t v, uint16_t t) { return v < (1 << (t - 1)) ? v + (-1 << t) + 1 : v; }
 
 // Figure F.16
-uint8_t decode(FILE *f, struct HuffmanTable *h_table) {
-  uint8_t i = 0;
+uint16_t decode(FILE *f, struct HuffmanTable *h_table) {
+  int i = 0;
   uint16_t code = nextbit(f);
 
   while (code > h_table->maxcode[i]) {
@@ -436,8 +454,8 @@ uint8_t decode(FILE *f, struct HuffmanTable *h_table) {
 }
 
 // Figure F.17
-uint8_t receive(FILE *f, uint8_t ssss) {
-  uint8_t v = 0;
+uint16_t receive(FILE *f, uint16_t ssss) {
+  uint16_t v = 0;
   for (int i = 0; i < ssss; i++)
     v = (v << 1) + nextbit(f);
   return v;
@@ -446,7 +464,8 @@ uint8_t receive(FILE *f, uint8_t ssss) {
 // Figure F.18
 uint8_t nextbit(FILE *f) {
   // impure function
-  static uint8_t b, b2, cnt = 0;
+  static uint8_t b, cnt = 0;
+  uint8_t b2;
 
   if (cnt == 0) {
     try_fread(&b, 1, 1, f);
