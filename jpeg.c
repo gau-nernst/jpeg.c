@@ -92,7 +92,7 @@ struct JPEGState {
   uint16_t height;
   uint8_t n_components;
   uint16_t q_tables[4][BLOCK_SIZE * BLOCK_SIZE];
-  struct HuffmanTable h_tables[4];
+  struct HuffmanTable h_tables[2][4];
   struct Component *components;
   void *image_buffer;
 };
@@ -104,8 +104,8 @@ uint8_t lower_half(uint8_t x) { return x & 0xF; }
 int decode_jpeg(FILE *);
 int handle_app0(const uint8_t *);
 int handle_app1(const uint8_t *);
-int handle_dqt(const uint8_t *, struct JPEGState *);
-int handle_dht(const uint8_t *, struct JPEGState *);
+int handle_dqt(const uint8_t *, struct JPEGState *, uint16_t);
+int handle_dht(const uint8_t *, struct JPEGState *, uint16_t);
 int handle_sof0(const uint8_t *, struct JPEGState *);
 int handle_sos(const uint8_t *, struct JPEGState *, FILE *);
 
@@ -188,13 +188,13 @@ int decode_jpeg(FILE *f) {
 
     case DQT:
       printf("DQT (length = %d)\n", length);
-      if (handle_dqt(payload, &jpeg_state))
+      if (handle_dqt(payload, &jpeg_state, length))
         return 1;
       break;
 
     case DHT:
       printf("DHT (length = %d)\n", length);
-      if (handle_dht(payload, &jpeg_state))
+      if (handle_dht(payload, &jpeg_state, length))
         return 1;
       break;
 
@@ -251,79 +251,91 @@ int handle_app1(const uint8_t *payload) {
   return 0;
 }
 
-int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state) {
-  uint8_t precision = upper_half(payload[0]);
-  uint8_t identifier = lower_half(payload[0]);
+// ITU-T.81 B.2.4.1
+// there can be multiple quantization tables within 1 DQT segment
+int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state, uint16_t length) {
+  int offset = 0;
+  while (offset < length - 2) {
+    uint8_t precision = upper_half(payload[offset]);
+    uint8_t identifier = lower_half(payload[offset]);
 
-  printf("  precision = %d (%d-bit)\n", precision, (precision + 1) * 8);
-  printf("  identifier = %d\n", identifier);
+    printf("  precision = %d (%d-bit)\n", precision, (precision + 1) * 8);
+    printf("  identifier = %d\n", identifier);
 
-  uint16_t *q_table = jpeg_state->q_tables[identifier];
-  if (precision) {
-    for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++)
-      q_table[i] = read_be_16(payload + 1 + i * 2);
-  } else {
-    for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++)
-      q_table[i] = payload[1 + i];
+    uint16_t *q_table = jpeg_state->q_tables[identifier];
+    if (precision) {
+      for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++)
+        q_table[i] = read_be_16(payload + offset + 1 + i * 2);
+    } else {
+      for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++)
+        q_table[i] = payload[offset + 1 + i];
+    }
+
+    for (int i = 0; i < BLOCK_SIZE; i++) {
+      printf("  ");
+      for (int j = 0; j < BLOCK_SIZE; j++)
+        printf(" %3d", q_table[ZIG_ZAG[i][j]]);
+      printf("\n");
+    }
+
+    offset += 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1);
   }
-
-  for (int i = 0; i < BLOCK_SIZE; i++) {
-    printf("  ");
-    for (int j = 0; j < BLOCK_SIZE; j++)
-      printf(" %3d", q_table[ZIG_ZAG[i][j]]);
-    printf("\n");
-  }
-
   return 0;
 }
 
 // ITU-T.81 B.2.4.2
-int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state) {
-  uint8_t class = upper_half(payload[0]);
-  uint8_t identifier = lower_half(payload[0]);
+// there can be multiple huffman tables within 1 DHT segment
+int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state, uint16_t length) {
+  int offset = 0;
+  while (offset < length - 2) {
+    uint8_t class = upper_half(payload[offset]);
+    uint8_t identifier = lower_half(payload[offset]);
 
-  printf("  class = %d (%s)\n", class, class ? "AC" : "DC");
-  printf("  identifier = %d\n", identifier);
+    printf("  class = %d (%s)\n", class, class ? "AC" : "DC");
+    printf("  identifier = %d\n", identifier);
 
-  // ITU-T.81 Annex C: create Huffman table
-  struct HuffmanTable *h_table = &(jpeg_state->h_tables[identifier]);
-  int n_codes = 0;
-  for (int i = 0; i < HUFFMAN_SIZE; i++)
-    n_codes += payload[1 + i];
-  try_malloc(h_table->huffsize, n_codes);
-  try_malloc(h_table->huffcode, n_codes * 2);
-  try_malloc(h_table->huffval, n_codes);
+    // ITU-T.81 Annex C: create Huffman table
+    struct HuffmanTable *h_table = &(jpeg_state->h_tables[class][identifier]);
+    int n_codes = 0;
+    for (int i = 0; i < HUFFMAN_SIZE; i++)
+      n_codes += payload[offset + 1 + i];
+    try_malloc(h_table->huffsize, n_codes);
+    try_malloc(h_table->huffcode, n_codes * 2);
+    try_malloc(h_table->huffval, n_codes);
 
-  // Figure C.1 and C.2
-  for (int i = 0, k = 0, code = 0; i < HUFFMAN_SIZE; i++) {
-    for (int j = 0; j < payload[1 + i]; j++, k++, code++) {
-      h_table->huffsize[k] = i;
-      h_table->huffcode[k] = code;
-      h_table->huffval[k] = payload[1 + HUFFMAN_SIZE + k];
+    // Figure C.1 and C.2
+    for (int i = 0, k = 0, code = 0; i < HUFFMAN_SIZE; i++) {
+      for (int j = 0; j < payload[offset + 1 + i]; j++, k++, code++) {
+        h_table->huffsize[k] = i;
+        h_table->huffcode[k] = code;
+        h_table->huffval[k] = payload[offset + 1 + HUFFMAN_SIZE + k];
+      }
+      code = code << 1;
     }
-    code = code << 1;
+
+    // Figure F.16
+    for (int i = 0, j = 0; i < HUFFMAN_SIZE; i++)
+      if (payload[offset + 1 + i]) {
+        h_table->valptr[i] = j;
+        h_table->mincode[i] = h_table->huffcode[j];
+        h_table->maxcode[i] = h_table->huffcode[j + payload[offset + 1 + i] - 1];
+        j += payload[offset + 1 + i];
+      } else
+        h_table->mincode[i] = h_table->maxcode[i] = h_table->valptr[i] = 0;
+
+    printf("  n_codes = %d\n\n", n_codes);
+    print_list("  BITS     =", payload + offset + 1, HUFFMAN_SIZE);
+    print_list("  HUFFSIZE =", h_table->huffsize, n_codes);
+    print_list("  HUFFCODE =", h_table->huffcode, n_codes);
+    print_list("  HUFFVAL  =", h_table->huffval, n_codes);
+    printf("\n");
+    print_list("  MINCODE  =", h_table->mincode, HUFFMAN_SIZE);
+    print_list("  MAXCODE  =", h_table->maxcode, HUFFMAN_SIZE);
+    print_list("  VALPTR   =", h_table->valptr, HUFFMAN_SIZE);
+    printf("\n");
+
+    offset += 1 + HUFFMAN_SIZE + n_codes;
   }
-
-  // Figure F.16
-  for (int i = 0, j = 0; i < HUFFMAN_SIZE; i++)
-    if (payload[1 + i]) {
-      h_table->valptr[i] = j;
-      h_table->mincode[i] = h_table->huffcode[j];
-      h_table->maxcode[i] = h_table->huffcode[j + payload[1 + i] - 1];
-      j += payload[1 + i];
-    } else
-      h_table->mincode[i] = h_table->maxcode[i] = h_table->valptr[i] = 0;
-
-  printf("  n_codes = %d\n\n", n_codes);
-  print_list("  BITS     =", payload + 1, HUFFMAN_SIZE);
-  print_list("  HUFFSIZE =", h_table->huffsize, n_codes);
-  print_list("  HUFFCODE =", h_table->huffcode, n_codes);
-  print_list("  HUFFVAL  =", h_table->huffval, n_codes);
-  printf("\n");
-  print_list("  MINCODE  =", h_table->mincode, HUFFMAN_SIZE);
-  print_list("  MAXCODE  =", h_table->maxcode, HUFFMAN_SIZE);
-  print_list("  VALPTR   =", h_table->valptr, HUFFMAN_SIZE);
-
   return 0;
 }
 
@@ -405,8 +417,8 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
     for (int mcu_x = 0; mcu_x < n_x_blocks / max_x_sampling; mcu_x++) {
       for (int c = 0; c < n_components; c++) {
         struct Component *component = &jpeg_state->components[payload[1 + c * 2] - 1];
-        struct HuffmanTable *dc_h_table = &jpeg_state->h_tables[component->dc_coding_table_id];
-        struct HuffmanTable *ac_h_table = &jpeg_state->h_tables[component->ac_coding_table_id];
+        struct HuffmanTable *dc_h_table = &jpeg_state->h_tables[0][component->dc_coding_table_id];
+        struct HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][component->ac_coding_table_id];
 
         for (int x = 0; x < component->x_sampling_factor; x++) {
           for (int y = 0; y < component->y_sampling_factor; y++) {
@@ -437,6 +449,7 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
       }
     }
 
+  printf("Done\n");
   return 0;
 }
 
