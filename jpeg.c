@@ -4,7 +4,7 @@
 #include <string.h>
 
 #define BLOCK_SIZE 8
-#define HUFFMAN_SIZE 16
+#define MAX_HUFFMAN_CODE_LENGTH 16
 
 #define try_malloc(ptr, size)                                                                                          \
   if ((ptr = malloc(size)) == NULL) {                                                                                  \
@@ -17,6 +17,10 @@
     printf("Failed to read data. Perhaps EOF?\n");                                                                     \
     return 1;                                                                                                          \
   }
+
+#define try_free(ptr)                                                                                                  \
+  if (ptr == NULL)                                                                                                     \
+    free(ptr);
 
 #define print_list(prefix, ptr, length)                                                                                \
   printf(prefix);                                                                                                      \
@@ -73,9 +77,9 @@ struct HuffmanTable {
   uint8_t *huffsize;
   uint16_t *huffcode;
   uint8_t *huffval;
-  uint16_t mincode[HUFFMAN_SIZE];
-  uint16_t maxcode[HUFFMAN_SIZE];
-  uint8_t valptr[HUFFMAN_SIZE];
+  uint16_t mincode[MAX_HUFFMAN_CODE_LENGTH];
+  int32_t maxcode[MAX_HUFFMAN_CODE_LENGTH];
+  uint8_t valptr[MAX_HUFFMAN_CODE_LENGTH];
 };
 
 struct Component {
@@ -109,7 +113,7 @@ int handle_dht(const uint8_t *, struct JPEGState *, uint16_t);
 int handle_sof0(const uint8_t *, struct JPEGState *);
 int handle_sos(const uint8_t *, struct JPEGState *, FILE *);
 
-uint16_t extend(uint16_t, uint16_t);
+int16_t extend(uint16_t, uint16_t);
 uint16_t decode(FILE *, struct HuffmanTable *);
 uint16_t receive(FILE *, uint16_t);
 uint8_t nextbit(FILE *);
@@ -147,7 +151,8 @@ int decode_jpeg(FILE *f) {
   uint16_t length;
   uint8_t *payload = NULL;
 
-  for (;;) {
+  uint8_t finished = 0;
+  while (finished == 0) {
     try_fread(marker, 1, 2, f);
     printf("%X%X ", marker[0], marker[1]);
 
@@ -210,15 +215,21 @@ int decode_jpeg(FILE *f) {
         return 1;
       break;
 
+    case EOI:
+      printf("EOI\n");
+      finished = 1;
+      break;
+
     default:
       printf("Unknown marker (length = %d)\n", length);
       break;
     }
 
-    if (payload)
-      free(payload);
+    try_free(payload);
     printf("\n");
   }
+  try_free(jpeg_state.image_buffer);
+  try_free(jpeg_state.components);
 
   return 0;
 }
@@ -259,8 +270,7 @@ int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state, uint16_t le
     uint8_t precision = upper_half(payload[offset]);
     uint8_t identifier = lower_half(payload[offset]);
 
-    printf("  precision = %d (%d-bit)\n", precision, (precision + 1) * 8);
-    printf("  identifier = %d\n", identifier);
+    printf("  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
 
     uint16_t *q_table = jpeg_state->q_tables[identifier];
     if (precision) {
@@ -291,50 +301,49 @@ int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state, uint16_t le
     uint8_t class = upper_half(payload[offset]);
     uint8_t identifier = lower_half(payload[offset]);
 
-    printf("  class = %d (%s)\n", class, class ? "AC" : "DC");
-    printf("  identifier = %d\n", identifier);
+    printf("  class = %d (%s), identifier = %D\n", class, class ? "AC" : "DC", identifier);
 
     // ITU-T.81 Annex C: create Huffman table
     struct HuffmanTable *h_table = &(jpeg_state->h_tables[class][identifier]);
     int n_codes = 0;
-    for (int i = 0; i < HUFFMAN_SIZE; i++)
+    for (int i = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++)
       n_codes += payload[offset + 1 + i];
     try_malloc(h_table->huffsize, n_codes);
     try_malloc(h_table->huffcode, n_codes * 2);
     try_malloc(h_table->huffval, n_codes);
 
     // Figure C.1 and C.2
-    for (int i = 0, k = 0, code = 0; i < HUFFMAN_SIZE; i++) {
+    for (int i = 0, k = 0, code = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++) {
       for (int j = 0; j < payload[offset + 1 + i]; j++, k++, code++) {
         h_table->huffsize[k] = i;
         h_table->huffcode[k] = code;
-        h_table->huffval[k] = payload[offset + 1 + HUFFMAN_SIZE + k];
+        h_table->huffval[k] = payload[offset + 1 + MAX_HUFFMAN_CODE_LENGTH + k];
       }
       code = code << 1;
     }
 
     // Figure F.16
-    for (int i = 0, j = 0; i < HUFFMAN_SIZE; i++)
+    for (int i = 0, j = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++)
       if (payload[offset + 1 + i]) {
         h_table->valptr[i] = j;
         h_table->mincode[i] = h_table->huffcode[j];
         h_table->maxcode[i] = h_table->huffcode[j + payload[offset + 1 + i] - 1];
         j += payload[offset + 1 + i];
       } else
-        h_table->mincode[i] = h_table->maxcode[i] = h_table->valptr[i] = 0;
+        h_table->maxcode[i] = -1;
 
-    printf("  n_codes = %d\n\n", n_codes);
-    print_list("  BITS     =", payload + offset + 1, HUFFMAN_SIZE);
+    printf("  n_codes = %d\n", n_codes);
+    print_list("  BITS     =", payload + offset + 1, MAX_HUFFMAN_CODE_LENGTH);
     print_list("  HUFFSIZE =", h_table->huffsize, n_codes);
     print_list("  HUFFCODE =", h_table->huffcode, n_codes);
     print_list("  HUFFVAL  =", h_table->huffval, n_codes);
     printf("\n");
-    print_list("  MINCODE  =", h_table->mincode, HUFFMAN_SIZE);
-    print_list("  MAXCODE  =", h_table->maxcode, HUFFMAN_SIZE);
-    print_list("  VALPTR   =", h_table->valptr, HUFFMAN_SIZE);
+    print_list("  MINCODE  =", h_table->mincode, MAX_HUFFMAN_CODE_LENGTH);
+    print_list("  MAXCODE  =", h_table->maxcode, MAX_HUFFMAN_CODE_LENGTH);
+    print_list("  VALPTR   =", h_table->valptr, MAX_HUFFMAN_CODE_LENGTH);
     printf("\n");
 
-    offset += 1 + HUFFMAN_SIZE + n_codes;
+    offset += 1 + MAX_HUFFMAN_CODE_LENGTH + n_codes;
   }
   return 0;
 }
@@ -358,7 +367,7 @@ int handle_sof0(const uint8_t *payload, struct JPEGState *jpeg_state) {
 
   for (int i = 0; i < jpeg_state->n_components; i++) {
     uint8_t component_id = payload[6 + i * 3]; // this should be i+1, according to JFIF
-    struct Component *component = jpeg_state->components + component_id - 1;
+    struct Component *component = &jpeg_state->components[component_id - 1];
     component->x_sampling_factor = upper_half(payload[7 + i * 3]);
     component->y_sampling_factor = lower_half(payload[7 + i * 3]);
     component->q_table_id = payload[8 + i * 3];
@@ -424,7 +433,7 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
           for (int y = 0; y < component->y_sampling_factor; y++) {
             // decode DC: F.2.2.1
             uint16_t t = decode(f, dc_h_table);
-            uint16_t diff = extend(receive(f, t), t);
+            int16_t diff = extend(receive(f, t), t);
             pred += diff;
             dct_coefs[0] = pred;
 
@@ -437,9 +446,11 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
               else if (rs == 0x00) // EOB - end of block
                 break;
               else {
-                uint16_t ssss = lower_half(rs);
                 uint16_t rrrr = upper_half(rs);
+                uint16_t ssss = lower_half(rs);
                 k += rrrr;
+                if (k >= BLOCK_SIZE * BLOCK_SIZE)
+                  printf("Big problem. k=%d\n", k);
                 dct_coefs[k] = extend(receive(f, ssss), ssss);
                 k += 1;
               }
@@ -448,13 +459,11 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
         }
       }
     }
-
-  printf("Done\n");
   return 0;
 }
 
 // Figure F.12
-uint16_t extend(uint16_t v, uint16_t t) { return v < (1 << (t - 1)) ? v + (-1 << t) + 1 : v; }
+int16_t extend(uint16_t v, uint16_t t) { return v < (1 << (t - 1)) ? v + (-1 << t) + 1 : v; }
 
 // Figure F.16
 uint16_t decode(FILE *f, struct HuffmanTable *h_table) {
@@ -480,13 +489,13 @@ uint16_t receive(FILE *f, uint16_t ssss) {
 uint8_t nextbit(FILE *f) {
   // impure function
   static uint8_t b, cnt = 0;
-  uint8_t b2;
 
   if (cnt == 0) {
     try_fread(&b, 1, 1, f);
     cnt = 8;
 
     if (b == 0xFF) {
+      uint8_t b2;
       try_fread(&b2, 1, 1, f);
       if (b2 != 0) {
         if (b2 == DNL) {
@@ -499,9 +508,5 @@ uint8_t nextbit(FILE *f) {
       }
     }
   }
-
-  uint8_t bit = b >> 7;
-  cnt--;
-  b <<= 1;
-  return bit;
+  return (b >> --cnt) & 1;
 }
