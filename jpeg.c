@@ -360,7 +360,7 @@ int handle_sof0(const uint8_t *payload, struct JPEGState *jpeg_state) {
 }
 
 int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
-  uint8_t n_components = payload[0]; // number of components in this scan
+  uint8_t n_components = payload[0];
   printf("  n_components in scan = %d\n", n_components);
 
   for (int i = 0; i < n_components; i++) {
@@ -380,60 +380,62 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
   printf("  al = %d\n", payload[4 + n_components * 2]);
 
   // decode scan
-  // calculate number of MCUs based on chroma-subsampling
-  uint16_t top, bottom;
-  for (int i = 0; i < jpeg_state->n_components; i++) {
-    struct Component *component = jpeg_state->components + i;
-    uint16_t ref = component->x_sampling_factor * component->y_sampling_factor;
-    top += ref;
-    bottom = max(bottom, ref); // max
-  }
-  uint16_t n_mcu = ceil_div(jpeg_state->width, BLOCK_SIZE) * ceil_div(jpeg_state->height, BLOCK_SIZE) * top / bottom;
-
-  uint16_t pred = 0, diff, t;
-
   if (n_components == 1) {
     printf("Decode 1-component scan is not implemented\n");
     return 1;
   }
 
+  // calculate number of MCUs based on chroma-subsampling
+  uint16_t max_x_sampling = 0, max_y_sampling = 0;
+  for (int i = 0; i < jpeg_state->n_components; i++) {
+    struct Component *component = jpeg_state->components + i;
+    max_x_sampling = max(max_x_sampling, component->x_sampling_factor);
+    max_y_sampling = max(max_y_sampling, component->y_sampling_factor);
+  }
+
+  uint16_t n_x_blocks = ceil_div(jpeg_state->width, BLOCK_SIZE);
+  uint16_t n_y_blocks = ceil_div(jpeg_state->height, BLOCK_SIZE);
+
+  uint16_t pred = 0;
   uint16_t dct_coefs[BLOCK_SIZE * BLOCK_SIZE] = {0};
 
   // refer to T.81 Table A.2 for MCU packing order
   // F.2.2
-  for (int i = 0; i < n_mcu; i++) {
-    for (int c = 0; c < n_components; c++) {
-      struct Component *component = &jpeg_state->components[payload[1 + c * 2] - 1];
-      struct HuffmanTable *h_table = &jpeg_state->h_tables[component->dc_coding_table_id];
+  for (int mcu_y = 0; mcu_y < n_y_blocks / max_y_sampling; mcu_y++)
+    for (int mcu_x = 0; mcu_x < n_x_blocks / max_x_sampling; mcu_x++) {
+      for (int c = 0; c < n_components; c++) {
+        struct Component *component = &jpeg_state->components[payload[1 + c * 2] - 1];
+        struct HuffmanTable *dc_h_table = &jpeg_state->h_tables[component->dc_coding_table_id];
+        struct HuffmanTable *ac_h_table = &jpeg_state->h_tables[component->ac_coding_table_id];
 
-      for (int x = 0; x < component->x_sampling_factor; x++) {
-        for (int y = 0; y < component->y_sampling_factor; y++) {
-          // decode DC: F.2.2.1
-          t = decode(f, h_table);
-          diff = receive(f, t);
-          diff = extend(diff, t);
-          pred += diff;
-          dct_coefs[0] = pred;
+        for (int x = 0; x < component->x_sampling_factor; x++) {
+          for (int y = 0; y < component->y_sampling_factor; y++) {
+            // decode DC: F.2.2.1
+            uint16_t t = decode(f, dc_h_table);
+            uint16_t diff = extend(receive(f, t), t);
+            pred += diff;
+            dct_coefs[0] = pred;
 
-          // decode AC: F.2.2.2
-          int k = 1;
-          while (k < BLOCK_SIZE * BLOCK_SIZE) {
-            uint16_t rs = decode(f, h_table);
-            if (rs == 0xF0) // ZRL - zero run length
-              k += 16;
-            else if (rs == 0x00) // EOB - end of block
-              break;
-            else {
-              uint16_t ssss = lower_half(rs);
-              uint16_t rrrr = upper_half(rs);
-              k += rrrr;
-              dct_coefs[k] = extend(receive(f, ssss), ssss);
+            // decode AC: F.2.2.2
+            int k = 1;
+            while (k < BLOCK_SIZE * BLOCK_SIZE) {
+              uint16_t rs = decode(f, ac_h_table);
+              if (rs == 0xF0) // ZRL - zero run length
+                k += 16;
+              else if (rs == 0x00) // EOB - end of block
+                break;
+              else {
+                uint16_t ssss = lower_half(rs);
+                uint16_t rrrr = upper_half(rs);
+                k += rrrr;
+                dct_coefs[k] = extend(receive(f, ssss), ssss);
+                k += 1;
+              }
             }
           }
         }
       }
     }
-  }
 
   return 0;
 }
