@@ -6,17 +6,15 @@
 #define BLOCK_SIZE 8
 #define MAX_HUFFMAN_CODE_LENGTH 16
 
-#define try_malloc(ptr, size)                                                                                          \
-  if ((ptr = malloc(size)) == NULL) {                                                                                  \
-    printf("Failed to allocate memory");                                                                               \
+#define check(condition, msg)                                                                                          \
+  if (condition) {                                                                                                     \
+    printf(msg);                                                                                                       \
     return 1;                                                                                                          \
   }
 
+#define try_malloc(ptr, size) check((ptr = malloc(size)) == NULL, "Failed to allocate memory\n")
 #define try_fread(ptr, size, n_items, stream)                                                                          \
-  if (fread(ptr, size, n_items, stream) < (size * n_items)) {                                                          \
-    printf("Failed to read data. Perhaps EOF?\n");                                                                     \
-    return 1;                                                                                                          \
-  }
+  check(fread(ptr, size, n_items, stream) < (size * n_items), "Failed to read data. Perhaps EOF?\n")
 
 #define try_free(ptr)                                                                                                  \
   if (ptr == NULL)                                                                                                     \
@@ -106,12 +104,12 @@ uint8_t upper_half(uint8_t x) { return x >> 4; }
 uint8_t lower_half(uint8_t x) { return x & 0xF; }
 
 int decode_jpeg(FILE *);
-int handle_app0(const uint8_t *);
-int handle_app1(const uint8_t *);
-int handle_dqt(const uint8_t *, struct JPEGState *, uint16_t);
-int handle_dht(const uint8_t *, struct JPEGState *, uint16_t);
-int handle_sof0(const uint8_t *, struct JPEGState *);
-int handle_sos(const uint8_t *, struct JPEGState *, FILE *);
+int handle_app0(const uint8_t *, uint16_t);
+int handle_app1(const uint8_t *, uint16_t);
+int handle_dqt(const uint8_t *, uint16_t, struct JPEGState *);
+int handle_dht(const uint8_t *, uint16_t, struct JPEGState *);
+int handle_sof0(const uint8_t *, uint16_t, struct JPEGState *);
+int handle_sos(const uint8_t *, uint16_t, struct JPEGState *, FILE *);
 
 int16_t extend(uint16_t, uint16_t);
 uint16_t decode(FILE *, struct HuffmanTable *);
@@ -132,10 +130,7 @@ const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
 // clang-format on
 
 int main(int argc, char *argv[]) {
-  if (argc == 1) {
-    printf("No input\n");
-    return 1;
-  }
+  check(argc == 1, "No input\n");
 
   FILE *f = fopen(argv[1], "rb");
   if (f == NULL) {
@@ -156,22 +151,19 @@ int decode_jpeg(FILE *f) {
     try_fread(marker, 1, 2, f);
     printf("%X%X ", marker[0], marker[1]);
 
-    if (marker[0] != 0xFF) {
-      printf("Not a marker\n");
-      return 1;
-    }
+    check(marker[0] != 0xFF, "Not a marker\n");
 
     if (marker[1] == TEM | marker[1] == SOI | marker[1] == EOI | (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
       length = 0;
     } else {
       try_fread(&length, 1, 2, f);
-      length = read_be_16((const uint8_t *)&length);
+      length = read_be_16((const uint8_t *)&length) - 2;
     }
     if (length) {
       // TODO: re-use payload buffer
       // max buffer size?
-      try_malloc(payload, length - 2);
-      try_fread(payload, 1, length - 2, f);
+      try_malloc(payload, length);
+      try_fread(payload, 1, length, f);
     }
 
     switch (marker[1]) {
@@ -181,37 +173,37 @@ int decode_jpeg(FILE *f) {
 
     case APP0:
       printf("APP0 (length = %d)\n", length);
-      if (handle_app0(payload))
+      if (handle_app0(payload, length))
         return 1;
       break;
 
     case APP1:
       printf("APP1 (length = %d)\n", length);
-      if (handle_app1(payload))
+      if (handle_app1(payload, length))
         return 1;
       break;
 
     case DQT:
       printf("DQT (length = %d)\n", length);
-      if (handle_dqt(payload, &jpeg_state, length))
+      if (handle_dqt(payload, length, &jpeg_state))
         return 1;
       break;
 
     case DHT:
       printf("DHT (length = %d)\n", length);
-      if (handle_dht(payload, &jpeg_state, length))
+      if (handle_dht(payload, length, &jpeg_state))
         return 1;
       break;
 
     case SOF0:
       printf("SOF0 (length = %d)\n", length);
-      if (handle_sof0(payload, &jpeg_state))
+      if (handle_sof0(payload, length, &jpeg_state))
         return 1;
       break;
 
     case SOS:
       printf("SOS\n");
-      if (handle_sos(payload, &jpeg_state, f))
+      if (handle_sos(payload, length, &jpeg_state, f))
         return 1;
       break;
 
@@ -235,10 +227,11 @@ int decode_jpeg(FILE *f) {
 }
 
 // JFIF i.e. JPEG Part 5
-int handle_app0(const uint8_t *payload) {
+int handle_app0(const uint8_t *payload, uint16_t length) {
   printf("  identifier = %.5s\n", payload); // either JFIF or JFXX
 
   if (strcmp((const char *)payload, "JFIF") == 0) {
+    check(length < 14, "Payload is too short\n");
     printf("  version = %d.%d\n", payload[5], payload[6]);
     printf("  units = %d\n", payload[7]);
     printf("  density = (%d, %d)\n", read_be_16(payload + 8), read_be_16(payload + 10));
@@ -251,7 +244,7 @@ int handle_app0(const uint8_t *payload) {
   return 0;
 }
 
-int handle_app1(const uint8_t *payload) {
+int handle_app1(const uint8_t *payload, uint16_t length) {
   printf("  identifier = %s\n", payload);
 
   if (strcmp((const char *)payload, "Exif") == 0) {
@@ -264,11 +257,13 @@ int handle_app1(const uint8_t *payload) {
 
 // ITU-T.81 B.2.4.1
 // there can be multiple quantization tables within 1 DQT segment
-int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state, uint16_t length) {
+int handle_dqt(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_state) {
   int offset = 0;
-  while (offset < length - 2) {
+  while (offset < length) {
     uint8_t precision = upper_half(payload[offset]);
     uint8_t identifier = lower_half(payload[offset]);
+
+    check(length < offset + 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1), "Payload is too short\n");
 
     printf("  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
 
@@ -295,11 +290,13 @@ int handle_dqt(const uint8_t *payload, struct JPEGState *jpeg_state, uint16_t le
 
 // ITU-T.81 B.2.4.2
 // there can be multiple huffman tables within 1 DHT segment
-int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state, uint16_t length) {
+int handle_dht(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_state) {
   int offset = 0;
-  while (offset < length - 2) {
+  while (offset < length) {
     uint8_t class = upper_half(payload[offset]);
     uint8_t identifier = lower_half(payload[offset]);
+
+    check(length < offset + 1 + MAX_HUFFMAN_CODE_LENGTH, "Payload is too short\n");
 
     printf("  class = %d (%s), identifier = %D\n", class, class ? "AC" : "DC", identifier);
 
@@ -308,6 +305,9 @@ int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state, uint16_t le
     int n_codes = 0;
     for (int i = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++)
       n_codes += payload[offset + 1 + i];
+
+    check(length < offset + 1 + MAX_HUFFMAN_CODE_LENGTH + n_codes, "Payload is too short\n");
+
     try_malloc(h_table->huffsize, n_codes);
     try_malloc(h_table->huffcode, n_codes * 2);
     try_malloc(h_table->huffval, n_codes);
@@ -348,15 +348,17 @@ int handle_dht(const uint8_t *payload, struct JPEGState *jpeg_state, uint16_t le
   return 0;
 }
 
-int handle_sof0(const uint8_t *payload, struct JPEGState *jpeg_state) {
+int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_state) {
   jpeg_state->encoding = 0;
 
   // Table B.2
+  check(length < 6, "Payload is too short\n");
   uint8_t precision = payload[0];
   jpeg_state->height = read_be_16(payload + 1);
   jpeg_state->width = read_be_16(payload + 3);
   jpeg_state->n_components = payload[5];
 
+  check(length < 6 + jpeg_state->n_components * 3, "Payload is too short\n");
   try_malloc(jpeg_state->components, sizeof(struct Component) * jpeg_state->n_components);
   try_malloc(jpeg_state->image_buffer,
              precision / 8 * jpeg_state->height * jpeg_state->width * jpeg_state->n_components);
@@ -380,7 +382,7 @@ int handle_sof0(const uint8_t *payload, struct JPEGState *jpeg_state) {
   return 0;
 }
 
-int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
+int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_state, FILE *f) {
   uint8_t n_components = payload[0];
   printf("  n_components in scan = %d\n", n_components);
 
@@ -449,8 +451,7 @@ int handle_sos(const uint8_t *payload, struct JPEGState *jpeg_state, FILE *f) {
                 uint16_t rrrr = upper_half(rs);
                 uint16_t ssss = lower_half(rs);
                 k += rrrr;
-                if (k >= BLOCK_SIZE * BLOCK_SIZE)
-                  printf("Big problem. k=%d\n", k);
+                check(k >= BLOCK_SIZE * BLOCK_SIZE, "Found invalid code\n");
                 dct_coefs[k] = extend(receive(f, ssss), ssss);
                 k += 1;
               }
