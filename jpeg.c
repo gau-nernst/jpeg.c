@@ -543,7 +543,7 @@ uint8_t nextbit(FILE *f) {
 void init_dct_matrix() {
   for (int i = 0; i < BLOCK_SIZE; i++)
     for (int j = 0; j < BLOCK_SIZE; j++)
-      DCT_MATRIX[i][j] = i == 0 ? 0.5f * M_SQRT1_2 : 0.5f * cos((j + 0.5f) * i * M_PI / BLOCK_SIZE);
+      DCT_MATRIX[i][j] = i == 0 ? 0.5 * M_SQRT1_2 : 0.5 * cos((j + 0.5) * i * M_PI / BLOCK_SIZE);
 }
 
 void idct_1d(double *x, double *out, size_t offset, size_t stride) {
