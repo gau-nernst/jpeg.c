@@ -145,8 +145,8 @@ double DCT_MATRIX[BLOCK_SIZE][BLOCK_SIZE];
 int main(int argc, char *argv[]) {
   check(argc == 1, "No input\n");
 
-  FILE *f = fopen(argv[1], "rb");
-  if (f == NULL) {
+  FILE *f;
+  if ((f = fopen(argv[1], "rb")) == NULL) {
     fprintf(stderr, "Failed to open %s\n", argv[1]);
     return 1;
   }
@@ -234,6 +234,8 @@ int decode_jpeg(FILE *f) {
     try_free(payload);
     fprintf(stderr, "\n");
   }
+  to_ppm("output.ppm", jpeg_state.image_buffer, jpeg_state.width, jpeg_state.height);
+
   try_free(jpeg_state.image_buffer);
   try_free(jpeg_state.components);
 
@@ -279,7 +281,8 @@ int handle_dqt(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
     fprintf(stderr, "  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
     check(length < offset + 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1), "Payload is too short\n");
 
-    uint16_t *q_table = jpeg_state->q_tables[identifier];
+    uint16_t *q_table;
+    q_table = jpeg_state->q_tables[identifier];
     if (precision) {
       for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++)
         q_table[i] = read_be_16(payload + offset + 1 + i * 2);
@@ -420,6 +423,8 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
     max_x_sampling = max(max_x_sampling, component->x_sampling_factor);
     max_y_sampling = max(max_y_sampling, component->y_sampling_factor);
   }
+  uint16_t mcu_width = BLOCK_SIZE * max_x_sampling;
+  uint16_t mcu_height = BLOCK_SIZE * max_y_sampling;
 
   uint16_t n_x_blocks = ceil_div(jpeg_state->width, BLOCK_SIZE);
   uint16_t n_y_blocks = ceil_div(jpeg_state->height, BLOCK_SIZE);
@@ -427,7 +432,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
   uint16_t dc_coefs[3] = {0};
   uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
   uint8_t *mcu;
-  try_malloc(mcu, BLOCK_SIZE * max_y_sampling * BLOCK_SIZE * max_x_sampling * n_components);
+  try_malloc(mcu, mcu_width * mcu_height * n_components);
 
   // refer to T.81 Table A.2 for MCU packing order
   // A.2.3
@@ -439,27 +444,42 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
         struct HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][lower_half(payload[2 + c * 2])];
         uint16_t *q_table = jpeg_state->q_tables[component->q_table_id];
 
-        for (int x = 0; x < component->x_sampling_factor; x++) {
-          for (int y = 0; y < component->y_sampling_factor; y++) {
+        for (int y = 0; y < component->y_sampling_factor; y++) {
+          for (int x = 0; x < component->x_sampling_factor; x++) {
             sof0_decode_block(block_u8, dc_coefs + c, f, dc_h_table, ac_h_table, q_table);
 
             // place to mcu. A.2.3
+            int n_repeat_y = max_y_sampling / component->y_sampling_factor;
+            int n_repeat_x = max_x_sampling / component->x_sampling_factor;
             for (int j = 0; j < BLOCK_SIZE; j++)
-              for (int i = 0; i < BLOCK_SIZE; i++) {
-                int x_ratio = max_x_sampling / component->x_sampling_factor;
-                int y_ratio = max_y_sampling / component->y_sampling_factor;
-                for (int repeat_x = 0; repeat_x < x_ratio; repeat_x++)
-                  for (int repeat_y = 0; repeat_y < y_ratio; repeat_y++) {
-                    int row_idx = y * BLOCK_SIZE + j + repeat_y;
-                    int col_idx = x * BLOCK_SIZE + i + repeat_x;
-                    mcu[(row_idx * BLOCK_SIZE * max_y_sampling + col_idx) * n_components + c] = block_u8[j][i];
+              for (int repeat_y = 0; repeat_y < n_repeat_y; repeat_y++) {
+                int row_idx = y * BLOCK_SIZE + j * n_repeat_y + repeat_y;
+                for (int i = 0; i < BLOCK_SIZE; i++)
+                  for (int repeat_x = 0; repeat_x < n_repeat_x; repeat_x++) {
+                    int col_idx = x * BLOCK_SIZE + i * n_repeat_x + repeat_x;
+                    mcu[(row_idx * mcu_width + col_idx) * n_components + c] = block_u8[i][j];
                   }
               }
           }
         }
       }
-      // TODO: place MCU to image buffer
-      jpeg_state->image_buffer;
+
+      for (int j = 0; j < mcu_height; j++) {
+        int row_idx = mcu_y * mcu_height + j;
+        if (row_idx >= jpeg_state->height)
+          break;
+
+        for (int i = 0; i < mcu_width; i++) {
+          int col_idx = mcu_x * mcu_width + i;
+          if (col_idx >= jpeg_state->width)
+            break;
+
+          ycbcr_to_rgb_(mcu + (j * mcu_width + i) * n_components);
+          for (int c = 0; c < n_components; c++)
+            jpeg_state->image_buffer[(row_idx * jpeg_state->width + col_idx) * n_components + c] =
+                mcu[(j * mcu_width + i) * n_components + c];
+        }
+      }
     }
   return 0;
 }
@@ -585,9 +605,9 @@ void ycbcr_to_rgb_(uint8_t *x) {
   double g = x[0] - 0.34414 * x[1] - 0.71414 * x[2];
   double b = x[0] + 1.772   * x[1];
   // clang-format on
-  x[0] = round(r);
-  x[1] = round(g);
-  x[2] = round(b);
+  x[0] = clip(round(r), 0, 255);
+  x[1] = clip(round(g), 0, 255);
+  x[2] = clip(round(b), 0, 255);
 }
 
 int to_ppm(const char *filename, uint8_t *image_buffer, unsigned int width, unsigned int height) {
@@ -596,8 +616,11 @@ int to_ppm(const char *filename, uint8_t *image_buffer, unsigned int width, unsi
 
   fprintf(f, "P3\n%d %d\n255\n", width, height);
   for (int j = 0; j < height; j++)
-    for (int i = 0; i < width; i++)
+    for (int i = 0; i < width; i++) {
       for (int c = 0; c < 3; c++)
         fprintf(f, "%d ", image_buffer[(j * width + i) * 3 + c]);
+      fprintf(f, "\n");
+    }
+
   return 0;
 }
