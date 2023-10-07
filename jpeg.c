@@ -309,7 +309,7 @@ int handle_dht(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
 
     check(length < offset + 1 + MAX_HUFFMAN_CODE_LENGTH, "Payload is too short\n");
 
-    fprintf(stderr, "  class = %d (%s), identifier = %D\n", class, class ? "AC" : "DC", identifier);
+    fprintf(stderr, "  class = %d (%s), identifier = %d\n", class, class ? "AC" : "DC", identifier);
 
     // ITU-T.81 Annex C: create Huffman table
     struct HuffmanTable *h_table = &(jpeg_state->h_tables[class][identifier]);
