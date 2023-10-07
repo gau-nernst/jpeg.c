@@ -118,7 +118,7 @@ uint16_t receive(FILE *, uint16_t);
 uint8_t nextbit(FILE *);
 
 void init_dct_matrix();
-void idct_2d(uint16_t *, double *);
+void idct_2d(double *, double *);
 
 // clang-format off
 const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
@@ -427,7 +427,6 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
 
   uint16_t pred = 0;
   uint16_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
-  uint16_t block2[BLOCK_SIZE][BLOCK_SIZE];
   double block_float[BLOCK_SIZE][BLOCK_SIZE];
 
   // refer to T.81 Table A.2 for MCU packing order
@@ -469,9 +468,9 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
             // undo zig-zag
             for (int i = 0; i < BLOCK_SIZE; i++)
               for (int j = 0; j < BLOCK_SIZE; j++)
-                block2[i][j] = block[ZIG_ZAG[i][j]];
+                block_float[i][j] = block[ZIG_ZAG[i][j]];
 
-            idct_2d((uint16_t *)block2, (double *)block_float);
+            idct_2d((double *)block_float, (double *)block_float); // same input-output is safe
           }
         }
       }
@@ -535,18 +534,19 @@ void init_dct_matrix() {
       DCT_MATRIX[i][j] = i == 0 ? 0.5f * M_SQRT1_2 : 0.5f * cos((j + 0.5f) * i * M_PI / BLOCK_SIZE);
 }
 
-void idct_1d(uint16_t *x, double *out, size_t offset, size_t stride) {
+void idct_1d(double *x, double *out, size_t offset, size_t stride) {
   for (int i = 0; i < BLOCK_SIZE; i++) {
     double result = 0;
     for (int j = 0; j < BLOCK_SIZE; j++)
-      result += x[offset + j * stride] * DCT_MATRIX[i][j];
+      result += x[offset + j * stride] * DCT_MATRIX[j][i]; // DCT transposed
     out[offset + i * stride] = result;
   }
 }
 
-void idct_2d(uint16_t *x, double *out) {
+void idct_2d(double *x, double *out) {
+  double temp[BLOCK_SIZE][BLOCK_SIZE];
   for (int i = 0; i < BLOCK_SIZE; i++)
-    idct_1d(x, out, i * BLOCK_SIZE, 1); // row-wise
+    idct_1d(x, (double *)temp, i * BLOCK_SIZE, 1); // row-wise
   for (int j = 0; j < BLOCK_SIZE; j++)
-    idct_1d(x, out, j, BLOCK_SIZE); // column-wise
+    idct_1d((double *)temp, out, j, BLOCK_SIZE); // column-wise
 }
