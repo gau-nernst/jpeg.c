@@ -89,8 +89,6 @@ struct Component {
   uint8_t x_sampling_factor;
   uint8_t y_sampling_factor;
   uint8_t q_table_id;
-  uint8_t dc_coding_table_id;
-  uint8_t ac_coding_table_id;
 };
 
 struct JPEGState {
@@ -385,9 +383,8 @@ int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_
     component->y_sampling_factor = lower_half(payload[7 + i * 3]);
     component->q_table_id = payload[8 + i * 3];
 
-    fprintf(stderr, "  component %d\n", component_id);
-    fprintf(stderr, "    sampling_factor = (%d, %d)\n", component->x_sampling_factor, component->y_sampling_factor);
-    fprintf(stderr, "    q_table_identifier = %d\n", component->q_table_id);
+    fprintf(stderr, "  component %d: sampling_factor = (%d, %d)  q_table_id = %d\n", component_id,
+            component->x_sampling_factor, component->y_sampling_factor, component->q_table_id);
   }
 
   return 0;
@@ -397,15 +394,9 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
   uint8_t n_components = payload[0];
   fprintf(stderr, "  n_components in scan = %d\n", n_components);
 
-  for (int i = 0; i < n_components; i++) {
-    struct Component *component = &jpeg_state->components[payload[1 + i * 2] - 1];
-    component->dc_coding_table_id = upper_half(payload[2 + i * 2]);
-    component->ac_coding_table_id = lower_half(payload[2 + i * 2]);
-
-    fprintf(stderr, "  component %d\n", payload[1 + i * 2]);
-    fprintf(stderr, "    DC coding table = %d\n", component->dc_coding_table_id);
-    fprintf(stderr, "    AC coding table = %d\n", component->ac_coding_table_id);
-  }
+  for (int i = 0; i < n_components; i++)
+    fprintf(stderr, "  component %d: DC coding table = %d  AC coding table = %d\n", payload[1 + i * 2],
+            upper_half(payload[2 + i * 2]), lower_half(payload[2 + i * 2]));
 
   // not used by Baseline DCT
   fprintf(stderr, "  ss = %d\n", payload[1 + n_components * 2]);
@@ -441,8 +432,8 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
     for (int mcu_x = 0; mcu_x < n_x_blocks / max_x_sampling; mcu_x++) {
       for (int c = 0; c < n_components; c++) {
         struct Component *component = &jpeg_state->components[payload[1 + c * 2] - 1];
-        struct HuffmanTable *dc_h_table = &jpeg_state->h_tables[0][component->dc_coding_table_id];
-        struct HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][component->ac_coding_table_id];
+        struct HuffmanTable *dc_h_table = &jpeg_state->h_tables[0][upper_half(payload[2 + c * 2])];
+        struct HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][lower_half(payload[2 + c * 2])];
         uint16_t *q_table = jpeg_state->q_tables[component->q_table_id];
 
         for (int x = 0; x < component->x_sampling_factor; x++) {
