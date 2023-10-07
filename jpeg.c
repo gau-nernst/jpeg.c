@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define _USE_MATH_DEFINES // math constants for MSVC
 #define BLOCK_SIZE 8
 #define MAX_HUFFMAN_CODE_LENGTH 16
 
