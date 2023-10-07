@@ -9,7 +9,7 @@
 
 #define check(condition, msg)                                                                                          \
   if (condition) {                                                                                                     \
-    printf(msg);                                                                                                       \
+    fprintf(stderr, msg);                                                                                              \
     return 1;                                                                                                          \
   }
 
@@ -21,15 +21,17 @@
   if (ptr == NULL)                                                                                                     \
     free(ptr);
 
-#define print_list(prefix, ptr, length)                                                                                \
-  printf(prefix);                                                                                                      \
+#define print_list(prefix, ptr, length, fmt)                                                                           \
+  fprintf(stderr, prefix);                                                                                             \
   for (int i = 0; i < (length); i++)                                                                                   \
-    printf(" %3d", (ptr)[i]);                                                                                          \
-  printf("\n");
+    fprintf(stderr, fmt, (ptr)[i]);                                                                                    \
+  fprintf(stderr, "\n");
 
 // https://stackoverflow.com/a/2745086
 #define ceil_div(x, y) (((x)-1) / (y) + 1)
 #define max(x, y) (((x) > (y)) ? (x) : (y))
+#define min(x, y) (((x) < (y)) ? (x) : (y))
+#define clip(x, lower, higher) min(max(x, lower), higher)
 
 // ITU-T.81, Table B.1
 #define TEM 0x01
@@ -118,7 +120,8 @@ uint16_t receive(FILE *, uint16_t);
 uint8_t nextbit(FILE *);
 
 void init_dct_matrix();
-void idct_2d(double *, double *);
+void idct_2d_(double *);
+void ycbcr_to_rgb_(uint8_t *);
 
 // clang-format off
 const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
@@ -139,7 +142,7 @@ int main(int argc, char *argv[]) {
 
   FILE *f = fopen(argv[1], "rb");
   if (f == NULL) {
-    printf("Failed to open %s\n", argv[1]);
+    fprintf(stderr, "Failed to open %s\n", argv[1]);
     return 1;
   }
   init_dct_matrix();
@@ -155,7 +158,7 @@ int decode_jpeg(FILE *f) {
   uint8_t finished = 0;
   while (finished == 0) {
     try_fread(marker, 1, 2, f);
-    printf("%X%X ", marker[0], marker[1]);
+    fprintf(stderr, "%X%X ", marker[0], marker[1]);
 
     check(marker[0] != 0xFF, "Not a marker\n");
 
@@ -174,57 +177,57 @@ int decode_jpeg(FILE *f) {
 
     switch (marker[1]) {
     case SOI:
-      printf("SOI");
+      fprintf(stderr, "SOI");
       break;
 
     case APP0:
-      printf("APP0 (length = %d)\n", length);
+      fprintf(stderr, "APP0 (length = %d)\n", length);
       if (handle_app0(payload, length))
         return 1;
       break;
 
     case APP1:
-      printf("APP1 (length = %d)\n", length);
+      fprintf(stderr, "APP1 (length = %d)\n", length);
       if (handle_app1(payload, length))
         return 1;
       break;
 
     case DQT:
-      printf("DQT (length = %d)\n", length);
+      fprintf(stderr, "DQT (length = %d)\n", length);
       if (handle_dqt(payload, length, &jpeg_state))
         return 1;
       break;
 
     case DHT:
-      printf("DHT (length = %d)\n", length);
+      fprintf(stderr, "DHT (length = %d)\n", length);
       if (handle_dht(payload, length, &jpeg_state))
         return 1;
       break;
 
     case SOF0:
-      printf("SOF0 (length = %d)\n", length);
+      fprintf(stderr, "SOF0 (length = %d)\n", length);
       if (handle_sof0(payload, length, &jpeg_state))
         return 1;
       break;
 
     case SOS:
-      printf("SOS\n");
+      fprintf(stderr, "SOS\n");
       if (handle_sos(payload, length, &jpeg_state, f))
         return 1;
       break;
 
     case EOI:
-      printf("EOI\n");
+      fprintf(stderr, "EOI\n");
       finished = 1;
       break;
 
     default:
-      printf("Unknown marker (length = %d)\n", length);
+      fprintf(stderr, "Unknown marker (length = %d)\n", length);
       break;
     }
 
     try_free(payload);
-    printf("\n");
+    fprintf(stderr, "\n");
   }
   try_free(jpeg_state.image_buffer);
   try_free(jpeg_state.components);
@@ -234,29 +237,29 @@ int decode_jpeg(FILE *f) {
 
 // JFIF i.e. JPEG Part 5
 int handle_app0(const uint8_t *payload, uint16_t length) {
-  printf("  identifier = %.5s\n", payload); // either JFIF or JFXX
+  fprintf(stderr, "  identifier = %.5s\n", payload); // either JFIF or JFXX
 
   if (strcmp((const char *)payload, "JFIF") == 0) {
     check(length < 14, "Payload is too short\n");
-    printf("  version = %d.%d\n", payload[5], payload[6]);
-    printf("  units = %d\n", payload[7]);
-    printf("  density = (%d, %d)\n", read_be_16(payload + 8), read_be_16(payload + 10));
-    printf("  thumbnail = (%d, %d)\n", payload[12], payload[13]);
+    fprintf(stderr, "  version = %d.%d\n", payload[5], payload[6]);
+    fprintf(stderr, "  units = %d\n", payload[7]);
+    fprintf(stderr, "  density = (%d, %d)\n", read_be_16(payload + 8), read_be_16(payload + 10));
+    fprintf(stderr, "  thumbnail = (%d, %d)\n", payload[12], payload[13]);
   } else if (strcmp((const char *)payload, "JFXX") == 0) {
-    printf("  extension_code = %X\n", payload[5]);
+    fprintf(stderr, "  extension_code = %X\n", payload[5]);
   } else
-    printf("  Invalid identifier\n");
+    fprintf(stderr, "  Invalid identifier\n");
 
   return 0;
 }
 
 int handle_app1(const uint8_t *payload, uint16_t length) {
-  printf("  identifier = %s\n", payload);
+  fprintf(stderr, "  identifier = %s\n", payload);
 
   if (strcmp((const char *)payload, "Exif") == 0) {
-    printf("  Exif detected\n");
+    fprintf(stderr, "  Exif detected\n");
   } else
-    printf("  Invalid identifier\n");
+    fprintf(stderr, "  Invalid identifier\n");
 
   return 0;
 }
@@ -271,7 +274,7 @@ int handle_dqt(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
 
     check(length < offset + 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1), "Payload is too short\n");
 
-    printf("  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
+    fprintf(stderr, "  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
 
     uint16_t *q_table = jpeg_state->q_tables[identifier];
     if (precision) {
@@ -283,10 +286,10 @@ int handle_dqt(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
     }
 
     for (int i = 0; i < BLOCK_SIZE; i++) {
-      printf("  ");
+      fprintf(stderr, "  ");
       for (int j = 0; j < BLOCK_SIZE; j++)
-        printf(" %3d", q_table[ZIG_ZAG[i][j]]);
-      printf("\n");
+        fprintf(stderr, " %3d", q_table[ZIG_ZAG[i][j]]);
+      fprintf(stderr, "\n");
     }
 
     offset += 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1);
@@ -304,7 +307,7 @@ int handle_dht(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
 
     check(length < offset + 1 + MAX_HUFFMAN_CODE_LENGTH, "Payload is too short\n");
 
-    printf("  class = %d (%s), identifier = %D\n", class, class ? "AC" : "DC", identifier);
+    fprintf(stderr, "  class = %d (%s), identifier = %D\n", class, class ? "AC" : "DC", identifier);
 
     // ITU-T.81 Annex C: create Huffman table
     struct HuffmanTable *h_table = &(jpeg_state->h_tables[class][identifier]);
@@ -338,16 +341,16 @@ int handle_dht(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
       } else
         h_table->maxcode[i] = -1;
 
-    printf("  n_codes = %d\n", n_codes);
-    print_list("  BITS     =", payload + offset + 1, MAX_HUFFMAN_CODE_LENGTH);
-    print_list("  HUFFSIZE =", h_table->huffsize, n_codes);
-    print_list("  HUFFCODE =", h_table->huffcode, n_codes);
-    print_list("  HUFFVAL  =", h_table->huffval, n_codes);
-    printf("\n");
-    print_list("  MINCODE  =", h_table->mincode, MAX_HUFFMAN_CODE_LENGTH);
-    print_list("  MAXCODE  =", h_table->maxcode, MAX_HUFFMAN_CODE_LENGTH);
-    print_list("  VALPTR   =", h_table->valptr, MAX_HUFFMAN_CODE_LENGTH);
-    printf("\n");
+    fprintf(stderr, "  n_codes = %d\n", n_codes);
+    print_list("  BITS     =", payload + offset + 1, MAX_HUFFMAN_CODE_LENGTH, " %3d");
+    print_list("  HUFFSIZE =", h_table->huffsize, n_codes, " %3d");
+    print_list("  HUFFCODE =", h_table->huffcode, n_codes, " %3d");
+    print_list("  HUFFVAL  =", h_table->huffval, n_codes, " %3d");
+    fprintf(stderr, "\n");
+    print_list("  MINCODE  =", h_table->mincode, MAX_HUFFMAN_CODE_LENGTH, " %3d");
+    print_list("  MAXCODE  =", h_table->maxcode, MAX_HUFFMAN_CODE_LENGTH, " %3d");
+    print_list("  VALPTR   =", h_table->valptr, MAX_HUFFMAN_CODE_LENGTH, " %3d");
+    fprintf(stderr, "\n");
 
     offset += 1 + MAX_HUFFMAN_CODE_LENGTH + n_codes;
   }
@@ -369,9 +372,9 @@ int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_
   try_malloc(jpeg_state->image_buffer,
              precision / 8 * jpeg_state->height * jpeg_state->width * jpeg_state->n_components);
 
-  printf("  encoding = Baseline DCT\n");
-  printf("  precision = %d-bit\n", precision);
-  printf("  image dimension = (%d, %d)\n", jpeg_state->width, jpeg_state->height);
+  fprintf(stderr, "  encoding = Baseline DCT\n");
+  fprintf(stderr, "  precision = %d-bit\n", precision);
+  fprintf(stderr, "  image dimension = (%d, %d)\n", jpeg_state->width, jpeg_state->height);
 
   for (int i = 0; i < jpeg_state->n_components; i++) {
     uint8_t component_id = payload[6 + i * 3]; // this should be i+1, according to JFIF
@@ -380,9 +383,9 @@ int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_
     component->y_sampling_factor = lower_half(payload[7 + i * 3]);
     component->q_table_id = payload[8 + i * 3];
 
-    printf("  component %d\n", component_id);
-    printf("    sampling_factor = (%d, %d)\n", component->x_sampling_factor, component->y_sampling_factor);
-    printf("    q_table_identifier = %d\n", component->q_table_id);
+    fprintf(stderr, "  component %d\n", component_id);
+    fprintf(stderr, "    sampling_factor = (%d, %d)\n", component->x_sampling_factor, component->y_sampling_factor);
+    fprintf(stderr, "    q_table_identifier = %d\n", component->q_table_id);
   }
 
   return 0;
@@ -390,27 +393,27 @@ int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_
 
 int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_state, FILE *f) {
   uint8_t n_components = payload[0];
-  printf("  n_components in scan = %d\n", n_components);
+  fprintf(stderr, "  n_components in scan = %d\n", n_components);
 
   for (int i = 0; i < n_components; i++) {
     struct Component *component = &jpeg_state->components[payload[1 + i * 2] - 1];
     component->dc_coding_table_id = upper_half(payload[2 + i * 2]);
     component->ac_coding_table_id = lower_half(payload[2 + i * 2]);
 
-    printf("  component %d\n", payload[1 + i * 2]);
-    printf("    DC coding table = %d\n", component->dc_coding_table_id);
-    printf("    AC coding table = %d\n", component->ac_coding_table_id);
+    fprintf(stderr, "  component %d\n", payload[1 + i * 2]);
+    fprintf(stderr, "    DC coding table = %d\n", component->dc_coding_table_id);
+    fprintf(stderr, "    AC coding table = %d\n", component->ac_coding_table_id);
   }
 
   // not used by Baseline DCT
-  printf("  ss = %d\n", payload[1 + n_components * 2]);
-  printf("  se = %d\n", payload[2 + n_components * 2]);
-  printf("  ah = %d\n", payload[3 + n_components * 2]);
-  printf("  al = %d\n", payload[4 + n_components * 2]);
+  fprintf(stderr, "  ss = %d\n", payload[1 + n_components * 2]);
+  fprintf(stderr, "  se = %d\n", payload[2 + n_components * 2]);
+  fprintf(stderr, "  ah = %d\n", payload[3 + n_components * 2]);
+  fprintf(stderr, "  al = %d\n", payload[4 + n_components * 2]);
 
   // decode scan
   if (n_components == 1) {
-    printf("Decode 1-component scan is not implemented\n");
+    fprintf(stderr, "Decode 1-component scan is not implemented\n");
     return 1;
   }
 
@@ -427,7 +430,8 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
 
   uint16_t pred = 0;
   uint16_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
-  double block_float[BLOCK_SIZE][BLOCK_SIZE];
+  double block_f64[BLOCK_SIZE][BLOCK_SIZE];
+  uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
 
   // refer to T.81 Table A.2 for MCU packing order
   // F.2.2
@@ -468,9 +472,16 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
             // undo zig-zag
             for (int i = 0; i < BLOCK_SIZE; i++)
               for (int j = 0; j < BLOCK_SIZE; j++)
-                block_float[i][j] = block[ZIG_ZAG[i][j]];
+                block_f64[i][j] = block[ZIG_ZAG[i][j]];
 
-            idct_2d((double *)block_float, (double *)block_float); // same input-output is safe
+            idct_2d_((double *)block_f64);
+
+            // level shift and rounding
+            for (int i = 0; i < BLOCK_SIZE; i++)
+              for (int j = 0; j < BLOCK_SIZE; j++)
+                block_u8[i][j] = clip(round(block_f64[i][j]) + 128, 0, 255);
+
+            // place to mcu
           }
         }
       }
@@ -515,10 +526,10 @@ uint8_t nextbit(FILE *f) {
       try_fread(&b2, 1, 1, f);
       if (b2 != 0) {
         if (b2 == DNL) {
-          printf("DNL marker. Not implemented\n");
+          fprintf(stderr, "DNL marker. Not implemented\n");
           return 1;
         } else {
-          printf("Error");
+          fprintf(stderr, "Error");
           return 1;
         }
       }
@@ -543,10 +554,22 @@ void idct_1d(double *x, double *out, size_t offset, size_t stride) {
   }
 }
 
-void idct_2d(double *x, double *out) {
+void idct_2d_(double *x) {
   double temp[BLOCK_SIZE][BLOCK_SIZE];
   for (int i = 0; i < BLOCK_SIZE; i++)
     idct_1d(x, (double *)temp, i * BLOCK_SIZE, 1); // row-wise
   for (int j = 0; j < BLOCK_SIZE; j++)
-    idct_1d((double *)temp, out, j, BLOCK_SIZE); // column-wise
+    idct_1d((double *)temp, x, j, BLOCK_SIZE); // column-wise
+}
+
+// JFIF p.3
+void ycbcr_to_rgb_(uint8_t *x) {
+  // clang-format off
+  double r = x[0]                          + 1.402   * (x[2] - 128);
+  double g = x[0] - 0.34414 * (x[1] - 128) - 0.71414 * (x[2] - 128);
+  double b = x[0] + 1.772   * (x[1] - 128);
+  // clang-format on
+  x[0] = round(r);
+  x[1] = round(g);
+  x[2] = round(b);
 }
