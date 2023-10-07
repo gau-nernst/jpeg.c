@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -116,6 +117,9 @@ uint16_t decode(FILE *, struct HuffmanTable *);
 uint16_t receive(FILE *, uint16_t);
 uint8_t nextbit(FILE *);
 
+void init_dct_matrix();
+void idct_2d(uint16_t *, double *);
+
 // clang-format off
 const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
   { 0,  1,  5,  6, 14, 15, 27, 28},
@@ -128,6 +132,7 @@ const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
   {35, 36, 48, 49, 57, 58, 62, 63},
 };
 // clang-format on
+double DCT_MATRIX[BLOCK_SIZE][BLOCK_SIZE];
 
 int main(int argc, char *argv[]) {
   check(argc == 1, "No input\n");
@@ -137,6 +142,7 @@ int main(int argc, char *argv[]) {
     printf("Failed to open %s\n", argv[1]);
     return 1;
   }
+  init_dct_matrix();
   return decode_jpeg(f);
 }
 
@@ -420,7 +426,9 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
   uint16_t n_y_blocks = ceil_div(jpeg_state->height, BLOCK_SIZE);
 
   uint16_t pred = 0;
-  uint16_t dct_coefs[BLOCK_SIZE * BLOCK_SIZE] = {0};
+  uint16_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
+  uint16_t block2[BLOCK_SIZE][BLOCK_SIZE];
+  double block_float[BLOCK_SIZE][BLOCK_SIZE];
 
   // refer to T.81 Table A.2 for MCU packing order
   // F.2.2
@@ -430,6 +438,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
         struct Component *component = &jpeg_state->components[payload[1 + c * 2] - 1];
         struct HuffmanTable *dc_h_table = &jpeg_state->h_tables[0][component->dc_coding_table_id];
         struct HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][component->ac_coding_table_id];
+        uint16_t *q_table = jpeg_state->q_tables[component->q_table_id];
 
         for (int x = 0; x < component->x_sampling_factor; x++) {
           for (int y = 0; y < component->y_sampling_factor; y++) {
@@ -437,7 +446,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
             uint16_t t = decode(f, dc_h_table);
             int16_t diff = extend(receive(f, t), t);
             pred += diff;
-            dct_coefs[0] = pred;
+            block[0] = pred * q_table[0];
 
             // decode AC: F.2.2.2
             int k = 1;
@@ -452,10 +461,17 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
                 uint16_t ssss = lower_half(rs);
                 k += rrrr;
                 check(k >= BLOCK_SIZE * BLOCK_SIZE, "Found invalid code\n");
-                dct_coefs[k] = extend(receive(f, ssss), ssss);
+                block[k] = extend(receive(f, ssss), ssss) * q_table[k];
                 k += 1;
               }
             }
+
+            // undo zig-zag
+            for (int i = 0; i < BLOCK_SIZE; i++)
+              for (int j = 0; j < BLOCK_SIZE; j++)
+                block2[i][j] = block[ZIG_ZAG[i][j]];
+
+            idct_2d((uint16_t *)block2, (double *)block_float);
           }
         }
       }
@@ -510,4 +526,27 @@ uint8_t nextbit(FILE *f) {
     }
   }
   return (b >> --cnt) & 1;
+}
+
+// a(u,v) * cos((v+1/2)*u*pi/N)
+void init_dct_matrix() {
+  for (int i = 0; i < BLOCK_SIZE; i++)
+    for (int j = 0; j < BLOCK_SIZE; j++)
+      DCT_MATRIX[i][j] = i == 0 ? 0.5f * M_SQRT1_2 : 0.5f * cos((j + 0.5f) * i * M_PI / BLOCK_SIZE);
+}
+
+void idct_1d(uint16_t *x, double *out, size_t offset, size_t stride) {
+  for (int i = 0; i < BLOCK_SIZE; i++) {
+    double result = 0;
+    for (int j = 0; j < BLOCK_SIZE; j++)
+      result += x[offset + j * stride] * DCT_MATRIX[i][j];
+    out[offset + i * stride] = result;
+  }
+}
+
+void idct_2d(uint16_t *x, double *out) {
+  for (int i = 0; i < BLOCK_SIZE; i++)
+    idct_1d(x, out, i * BLOCK_SIZE, 1); // row-wise
+  for (int j = 0; j < BLOCK_SIZE; j++)
+    idct_1d(x, out, j, BLOCK_SIZE); // column-wise
 }
