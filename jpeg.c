@@ -114,16 +114,15 @@ int handle_dht(const uint8_t *, uint16_t, struct JPEGState *);
 int handle_sof0(const uint8_t *, uint16_t, struct JPEGState *);
 int handle_sos(const uint8_t *, uint16_t, struct JPEGState *, FILE *);
 
-int16_t extend(uint16_t, uint16_t);
-uint16_t decode(FILE *, struct HuffmanTable *);
-uint16_t receive(FILE *, uint16_t);
-uint8_t nextbit(FILE *);
+int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], uint16_t *dc_coef, FILE *f,
+                      struct HuffmanTable *dc_h_table, struct HuffmanTable *ac_h_table, uint16_t *q_table);
 
 void init_dct_matrix();
 void idct_2d_(double *);
 void ycbcr_to_rgb_(uint8_t *);
 
 // clang-format off
+// ITU T.81 Figure A.6
 const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
   { 0,  1,  5,  6, 14, 15, 27, 28},
   { 2,  4,  7, 13, 16, 26, 29, 42},
@@ -367,6 +366,8 @@ int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_
   jpeg_state->width = read_be_16(payload + 3);
   jpeg_state->n_components = payload[5];
 
+  check((payload[5] != 1) & (payload[5] != 3), "Only 1 or 3 channels are supported");
+
   check(length < 6 + jpeg_state->n_components * 3, "Payload is too short\n");
   try_malloc(jpeg_state->components, sizeof(struct Component) * jpeg_state->n_components);
   try_malloc(jpeg_state->image_buffer,
@@ -404,7 +405,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
   fprintf(stderr, "  ah = %d\n", payload[3 + n_components * 2]);
   fprintf(stderr, "  al = %d\n", payload[4 + n_components * 2]);
 
-  // decode scan
+  // A.2.2
   if (n_components == 1) {
     fprintf(stderr, "Decode 1-component scan is not implemented\n");
     return 1;
@@ -421,13 +422,13 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
   uint16_t n_x_blocks = ceil_div(jpeg_state->width, BLOCK_SIZE);
   uint16_t n_y_blocks = ceil_div(jpeg_state->height, BLOCK_SIZE);
 
-  uint16_t pred = 0;
-  uint16_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
-  double block_f64[BLOCK_SIZE][BLOCK_SIZE];
+  uint16_t dc_coefs[3] = {0};
   uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
+  uint8_t *mcu;
+  try_malloc(mcu, BLOCK_SIZE * max_y_sampling * BLOCK_SIZE * max_x_sampling * n_components);
 
   // refer to T.81 Table A.2 for MCU packing order
-  // F.2.2
+  // A.2.3
   for (int mcu_y = 0; mcu_y < n_y_blocks / max_y_sampling; mcu_y++)
     for (int mcu_x = 0; mcu_x < n_x_blocks / max_x_sampling; mcu_x++) {
       for (int c = 0; c < n_components; c++) {
@@ -438,72 +439,30 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
 
         for (int x = 0; x < component->x_sampling_factor; x++) {
           for (int y = 0; y < component->y_sampling_factor; y++) {
-            // decode DC: F.2.2.1
-            uint16_t t = decode(f, dc_h_table);
-            int16_t diff = extend(receive(f, t), t);
-            pred += diff;
-            block[0] = pred * q_table[0];
+            sof0_decode_block(block_u8, dc_coefs + c, f, dc_h_table, ac_h_table, q_table);
 
-            // decode AC: F.2.2.2
-            int k = 1;
-            while (k < BLOCK_SIZE * BLOCK_SIZE) {
-              uint16_t rs = decode(f, ac_h_table);
-              if (rs == 0xF0) // ZRL - zero run length
-                k += 16;
-              else if (rs == 0x00) // EOB - end of block
-                break;
-              else {
-                uint16_t rrrr = upper_half(rs);
-                uint16_t ssss = lower_half(rs);
-                k += rrrr;
-                check(k >= BLOCK_SIZE * BLOCK_SIZE, "Found invalid code\n");
-                block[k] = extend(receive(f, ssss), ssss) * q_table[k];
-                k += 1;
+            // place to mcu. A.2.3
+            for (int j = 0; j < BLOCK_SIZE; j++)
+              for (int i = 0; i < BLOCK_SIZE; i++) {
+                int x_ratio = max_x_sampling / component->x_sampling_factor;
+                int y_ratio = max_y_sampling / component->y_sampling_factor;
+                for (int repeat_x = 0; repeat_x < x_ratio; repeat_x++)
+                  for (int repeat_y = 0; repeat_y < y_ratio; repeat_y++) {
+                    int row_idx = y * BLOCK_SIZE + j + repeat_y;
+                    int col_idx = x * BLOCK_SIZE + i + repeat_x;
+                    mcu[(row_idx * BLOCK_SIZE * max_y_sampling + col_idx) * n_components + c] = block_u8[j][i];
+                  }
               }
-            }
-
-            // undo zig-zag
-            for (int i = 0; i < BLOCK_SIZE; i++)
-              for (int j = 0; j < BLOCK_SIZE; j++)
-                block_f64[i][j] = block[ZIG_ZAG[i][j]];
-
-            idct_2d_((double *)block_f64);
-
-            // level shift and rounding
-            for (int i = 0; i < BLOCK_SIZE; i++)
-              for (int j = 0; j < BLOCK_SIZE; j++)
-                block_u8[i][j] = clip(round(block_f64[i][j]) + 128, 0, 255);
-
-            // place to mcu
           }
         }
       }
+      // TODO: place MCU to image buffer
     }
   return 0;
 }
 
 // Figure F.12
 int16_t extend(uint16_t v, uint16_t t) { return v < (1 << (t - 1)) ? v + (-1 << t) + 1 : v; }
-
-// Figure F.16
-uint16_t decode(FILE *f, struct HuffmanTable *h_table) {
-  int i = 0;
-  uint16_t code = nextbit(f);
-
-  while (code > h_table->maxcode[i]) {
-    i++;
-    code = (code << 1) + nextbit(f);
-  }
-  return h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
-}
-
-// Figure F.17
-uint16_t receive(FILE *f, uint16_t ssss) {
-  uint16_t v = 0;
-  for (int i = 0; i < ssss; i++)
-    v = (v << 1) + nextbit(f);
-  return v;
-}
 
 // Figure F.18
 uint8_t nextbit(FILE *f) {
@@ -529,6 +488,70 @@ uint8_t nextbit(FILE *f) {
     }
   }
   return (b >> --cnt) & 1;
+}
+
+// Figure F.17
+uint16_t receive(FILE *f, uint16_t ssss) {
+  uint16_t v = 0;
+  for (int i = 0; i < ssss; i++)
+    v = (v << 1) + nextbit(f);
+  return v;
+}
+
+// Figure F.16
+uint16_t decode(FILE *f, struct HuffmanTable *h_table) {
+  int i = 0;
+  uint16_t code = nextbit(f);
+
+  while (code > h_table->maxcode[i]) {
+    i++;
+    code = (code << 1) + nextbit(f);
+  }
+  return h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
+}
+
+int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], uint16_t *dc_coef, FILE *f,
+                      struct HuffmanTable *dc_h_table, struct HuffmanTable *ac_h_table, uint16_t *q_table) {
+  uint16_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
+  double block_f64[BLOCK_SIZE][BLOCK_SIZE];
+
+  // decode DC: F.2.2.1
+  uint16_t t = decode(f, dc_h_table);
+  int16_t diff = extend(receive(f, t), t);
+  dc_coef[0] += diff;
+  block[0] = dc_coef[0] * q_table[0];
+
+  // decode AC: F.2.2.2
+  int k = 1;
+  while (k < BLOCK_SIZE * BLOCK_SIZE) {
+    uint16_t rs = decode(f, ac_h_table);
+    if (rs == 0xF0) // ZRL - zero run length
+      k += 16;
+    else if (rs == 0x00) // EOB - end of block
+      break;
+    else {
+      uint16_t rrrr = upper_half(rs);
+      uint16_t ssss = lower_half(rs);
+      k += rrrr;
+      check(k >= BLOCK_SIZE * BLOCK_SIZE, "Found invalid code\n");
+      block[k] = extend(receive(f, ssss), ssss) * q_table[k];
+      k += 1;
+    }
+  }
+
+  // undo zig-zag
+  for (int i = 0; i < BLOCK_SIZE; i++)
+    for (int j = 0; j < BLOCK_SIZE; j++)
+      block_f64[i][j] = block[ZIG_ZAG[i][j]];
+
+  idct_2d_((double *)block_f64);
+
+  // level shift and rounding. A.3.1
+  for (int i = 0; i < BLOCK_SIZE; i++)
+    for (int j = 0; j < BLOCK_SIZE; j++)
+      block_u8[i][j] = clip(round(block_f64[i][j]) + 128, 0, 255);
+
+  return 0;
 }
 
 // a(u,v) * cos((v+1/2)*u*pi/N)
@@ -557,10 +580,12 @@ void idct_2d_(double *x) {
 
 // JFIF p.3
 void ycbcr_to_rgb_(uint8_t *x) {
+  x[1] -= 128;
+  x[2] -= 128;
   // clang-format off
-  double r = x[0]                          + 1.402   * (x[2] - 128);
-  double g = x[0] - 0.34414 * (x[1] - 128) - 0.71414 * (x[2] - 128);
-  double b = x[0] + 1.772   * (x[1] - 128);
+  double r = x[0]                  + 1.402   * x[2];
+  double g = x[0] - 0.34414 * x[1] - 0.71414 * x[2];
+  double b = x[0] + 1.772   * x[1];
   // clang-format on
   x[0] = round(r);
   x[1] = round(g);
