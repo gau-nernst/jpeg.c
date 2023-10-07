@@ -28,8 +28,8 @@
 #define print_list(prefix, ptr, length, fmt)                                                                           \
   {                                                                                                                    \
     fprintf(stderr, prefix);                                                                                           \
-    for (int i = 0; i < (length); i++)                                                                                 \
-      fprintf(stderr, fmt, (ptr)[i]);                                                                                  \
+    for (int _i = 0; _i < (length); _i++)                                                                              \
+      fprintf(stderr, fmt, (ptr)[_i]);                                                                                 \
     fprintf(stderr, "\n");                                                                                             \
   }
 
@@ -448,7 +448,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
         struct HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][lower_half(payload[2 + c * 2])];
         uint16_t *q_table = jpeg_state->q_tables[component->q_table_id];
 
-        for (int y = 0; y < component->y_sampling_factor; y++) {
+        for (int y = 0; y < component->y_sampling_factor; y++)
           for (int x = 0; x < component->x_sampling_factor; x++) {
             sof0_decode_block(block_u8, dc_coefs + c, f, dc_h_table, ac_h_table, q_table);
 
@@ -461,11 +461,10 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
                 for (int i = 0; i < BLOCK_SIZE; i++)
                   for (int repeat_x = 0; repeat_x < n_repeat_x; repeat_x++) {
                     int col_idx = x * BLOCK_SIZE + i * n_repeat_x + repeat_x;
-                    mcu[(row_idx * mcu_width + col_idx) * n_components + c] = block_u8[i][j];
+                    mcu[(row_idx * mcu_width + col_idx) * n_components + c] = block_u8[j][i];
                   }
               }
           }
-        }
       }
 
       for (int j = 0; j < mcu_height; j++) {
