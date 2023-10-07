@@ -20,14 +20,18 @@
   check(fread(ptr, size, n_items, stream) < (size * n_items), "Failed to read data. Perhaps EOF?\n")
 
 #define try_free(ptr)                                                                                                  \
-  if (ptr == NULL)                                                                                                     \
-    free(ptr);
+  {                                                                                                                    \
+    if (ptr == NULL)                                                                                                   \
+      free(ptr);                                                                                                       \
+  }
 
 #define print_list(prefix, ptr, length, fmt)                                                                           \
-  fprintf(stderr, prefix);                                                                                             \
-  for (int i = 0; i < (length); i++)                                                                                   \
-    fprintf(stderr, fmt, (ptr)[i]);                                                                                    \
-  fprintf(stderr, "\n");
+  {                                                                                                                    \
+    fprintf(stderr, prefix);                                                                                           \
+    for (int i = 0; i < (length); i++)                                                                                 \
+      fprintf(stderr, fmt, (ptr)[i]);                                                                                  \
+    fprintf(stderr, "\n");                                                                                             \
+  }
 
 // https://stackoverflow.com/a/2745086
 #define ceil_div(x, y) (((x)-1) / (y) + 1)
@@ -118,7 +122,7 @@ int handle_dht(const uint8_t *, uint16_t, struct JPEGState *);
 int handle_sof0(const uint8_t *, uint16_t, struct JPEGState *);
 int handle_sos(const uint8_t *, uint16_t, struct JPEGState *, FILE *);
 
-int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], uint16_t *dc_coef, FILE *f,
+int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef, FILE *f,
                       struct HuffmanTable *dc_h_table, struct HuffmanTable *ac_h_table, uint16_t *q_table);
 
 void init_dct_matrix();
@@ -429,7 +433,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
   uint16_t n_x_blocks = ceil_div(jpeg_state->width, BLOCK_SIZE);
   uint16_t n_y_blocks = ceil_div(jpeg_state->height, BLOCK_SIZE);
 
-  uint16_t dc_coefs[3] = {0};
+  int16_t dc_coefs[3] = {0};
   uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
   uint8_t *mcu;
   try_malloc(mcu, mcu_width * mcu_height * n_components);
@@ -528,9 +532,10 @@ uint16_t decode(FILE *f, struct HuffmanTable *h_table) {
   return h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
 }
 
-int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], uint16_t *dc_coef, FILE *f,
+int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef, FILE *f,
                       struct HuffmanTable *dc_h_table, struct HuffmanTable *ac_h_table, uint16_t *q_table) {
-  uint16_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
+  // NOTE: block can be negative
+  int32_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
   double block_f64[BLOCK_SIZE][BLOCK_SIZE];
 
   // decode DC: F.2.2.1
@@ -598,12 +603,10 @@ void idct_2d_(double *x) {
 
 // JFIF p.3
 void ycbcr_to_rgb_(uint8_t *x) {
-  x[1] -= 128;
-  x[2] -= 128;
   // clang-format off
-  double r = x[0]                  + 1.402   * x[2];
-  double g = x[0] - 0.34414 * x[1] - 0.71414 * x[2];
-  double b = x[0] + 1.772   * x[1];
+  double r = x[0]                  + 1.402   * (x[2] - 128);
+  double g = x[0] - 0.34414 * (x[1] - 128) - 0.71414 * (x[2] - 128);
+  double b = x[0] + 1.772   * (x[1] - 128);
   // clang-format on
   x[0] = clip(round(r), 0, 255);
   x[1] = clip(round(g), 0, 255);
