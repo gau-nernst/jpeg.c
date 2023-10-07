@@ -35,7 +35,11 @@
 #define min(x, y) (((x) < (y)) ? (x) : (y))
 #define clip(x, lower, higher) min(max(x, lower), higher)
 
-// ITU-T.81, Table B.1
+// ITU-T.81 F.1.2.2.3
+#define EOB 0x00
+#define ZRL 0xF0
+
+// ITU-T.81 Table B.1
 #define TEM 0x01
 
 #define SOF0 0xC0
@@ -99,7 +103,7 @@ struct JPEGState {
   uint16_t q_tables[4][BLOCK_SIZE * BLOCK_SIZE];
   struct HuffmanTable h_tables[2][4];
   struct Component *components;
-  void *image_buffer;
+  uint8_t *image_buffer;
 };
 
 uint16_t read_be_16(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
@@ -120,6 +124,8 @@ int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], uint16_t *dc_coe
 void init_dct_matrix();
 void idct_2d_(double *);
 void ycbcr_to_rgb_(uint8_t *);
+
+int to_ppm(const char *, uint8_t *, unsigned int, unsigned int);
 
 // clang-format off
 // ITU T.81 Figure A.6
@@ -270,10 +276,8 @@ int handle_dqt(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
   while (offset < length) {
     uint8_t precision = upper_half(payload[offset]);
     uint8_t identifier = lower_half(payload[offset]);
-
-    check(length < offset + 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1), "Payload is too short\n");
-
     fprintf(stderr, "  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
+    check(length < offset + 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1), "Payload is too short\n");
 
     uint16_t *q_table = jpeg_state->q_tables[identifier];
     if (precision) {
@@ -303,22 +307,19 @@ int handle_dht(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
   while (offset < length) {
     uint8_t class = upper_half(payload[offset]);
     uint8_t identifier = lower_half(payload[offset]);
-
+    fprintf(stderr, "  class = %d (%s), identifier = %d\n", class, class ? "AC" : "DC", identifier);
     check(length < offset + 1 + MAX_HUFFMAN_CODE_LENGTH, "Payload is too short\n");
 
-    fprintf(stderr, "  class = %d (%s), identifier = %d\n", class, class ? "AC" : "DC", identifier);
-
     // ITU-T.81 Annex C: create Huffman table
-    struct HuffmanTable *h_table = &(jpeg_state->h_tables[class][identifier]);
+    struct HuffmanTable *h_table = &jpeg_state->h_tables[class][identifier];
     int n_codes = 0;
     for (int i = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++)
       n_codes += payload[offset + 1 + i];
-
     check(length < offset + 1 + MAX_HUFFMAN_CODE_LENGTH + n_codes, "Payload is too short\n");
 
-    try_malloc(h_table->huffsize, n_codes);
-    try_malloc(h_table->huffcode, n_codes * 2);
-    try_malloc(h_table->huffval, n_codes);
+    try_malloc(h_table->huffsize, n_codes * sizeof(*h_table->huffsize));
+    try_malloc(h_table->huffcode, n_codes * sizeof(*h_table->huffcode));
+    try_malloc(h_table->huffval, n_codes * sizeof(*h_table->huffval));
 
     // Figure C.1 and C.2
     for (int i = 0, k = 0, code = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++) {
@@ -357,7 +358,7 @@ int handle_dht(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
 }
 
 int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_state) {
-  jpeg_state->encoding = 0;
+  jpeg_state->encoding = SOF0;
 
   // Table B.2
   check(length < 6, "Payload is too short\n");
@@ -366,16 +367,15 @@ int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_
   jpeg_state->width = read_be_16(payload + 3);
   jpeg_state->n_components = payload[5];
 
-  check((payload[5] != 1) & (payload[5] != 3), "Only 1 or 3 channels are supported");
-
-  check(length < 6 + jpeg_state->n_components * 3, "Payload is too short\n");
-  try_malloc(jpeg_state->components, sizeof(struct Component) * jpeg_state->n_components);
-  try_malloc(jpeg_state->image_buffer,
-             precision / 8 * jpeg_state->height * jpeg_state->width * jpeg_state->n_components);
-
   fprintf(stderr, "  encoding = Baseline DCT\n");
   fprintf(stderr, "  precision = %d-bit\n", precision);
   fprintf(stderr, "  image dimension = (%d, %d)\n", jpeg_state->width, jpeg_state->height);
+
+  check(precision != 8, "Only 8-bit image is supported\n");
+  check((payload[5] != 1) & (payload[5] != 3), "Only 1 or 3 channels are supported");
+  check(length < 6 + jpeg_state->n_components * 3, "Payload is too short\n");
+  try_malloc(jpeg_state->components, sizeof(struct Component) * jpeg_state->n_components);
+  try_malloc(jpeg_state->image_buffer, jpeg_state->height * jpeg_state->width * jpeg_state->n_components);
 
   for (int i = 0; i < jpeg_state->n_components; i++) {
     uint8_t component_id = payload[6 + i * 3]; // this should be i+1, according to JFIF
@@ -392,6 +392,8 @@ int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_
 }
 
 int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_state, FILE *f) {
+  check(jpeg_state->encoding != SOF0, "Only Baseline JPEG is support\n");
+
   uint8_t n_components = payload[0];
   fprintf(stderr, "  n_components in scan = %d\n", n_components);
 
@@ -457,6 +459,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
         }
       }
       // TODO: place MCU to image buffer
+      jpeg_state->image_buffer;
     }
   return 0;
 }
@@ -473,17 +476,14 @@ uint8_t nextbit(FILE *f) {
     try_fread(&b, 1, 1, f);
     cnt = 8;
 
+    // byte stuffing: ITU T.81 F.1.2.3
     if (b == 0xFF) {
       uint8_t b2;
       try_fread(&b2, 1, 1, f);
       if (b2 != 0) {
-        if (b2 == DNL) {
-          fprintf(stderr, "DNL marker. Not implemented\n");
-          return 1;
-        } else {
-          fprintf(stderr, "Error");
-          return 1;
-        }
+        check(b2 != DNL, "Found invalid data\n");
+        fprintf(stderr, "DNL marker. Not implemented\n");
+        return 1;
       }
     }
   }
@@ -500,13 +500,11 @@ uint16_t receive(FILE *f, uint16_t ssss) {
 
 // Figure F.16
 uint16_t decode(FILE *f, struct HuffmanTable *h_table) {
-  int i = 0;
+  int i = -1;
   uint16_t code = nextbit(f);
 
-  while (code > h_table->maxcode[i]) {
-    i++;
+  while (code > h_table->maxcode[++i])
     code = (code << 1) + nextbit(f);
-  }
   return h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
 }
 
@@ -525,9 +523,9 @@ int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], uint16_t *dc_coe
   int k = 1;
   while (k < BLOCK_SIZE * BLOCK_SIZE) {
     uint16_t rs = decode(f, ac_h_table);
-    if (rs == 0xF0) // ZRL - zero run length
+    if (rs == ZRL)
       k += 16;
-    else if (rs == 0x00) // EOB - end of block
+    else if (rs == EOB)
       break;
     else {
       uint16_t rrrr = upper_half(rs);
@@ -590,4 +588,16 @@ void ycbcr_to_rgb_(uint8_t *x) {
   x[0] = round(r);
   x[1] = round(g);
   x[2] = round(b);
+}
+
+int to_ppm(const char *filename, uint8_t *image_buffer, unsigned int width, unsigned int height) {
+  FILE *f = fopen(filename, "w");
+  check(f == NULL, "Failed to open file to write");
+
+  fprintf(f, "P3\n%d %d\n255\n", width, height);
+  for (int j = 0; j < height; j++)
+    for (int i = 0; i < width; i++)
+      for (int c = 0; c < 3; c++)
+        fprintf(f, "%d ", image_buffer[(j * width + i) * 3 + c]);
+  return 0;
 }
