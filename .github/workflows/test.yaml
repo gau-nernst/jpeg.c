@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - run: curl ${{ env.sample_image_url }} -o sample.jpg
-      - run: ${{ matrix.cc }} jpeg.c -o jpeg.o -lm && ar rcs libjpeg_foo.a jpeg.o
+      - run: ${{ matrix.cc }} -c -fPIC jpeg.c -o jpeg.o -lm && ar rcs libjpeg_foo.a jpeg.o
       #  ${{ matrix.cc }} test.c -o test -ljpeg_foo -L. && ./test sample.jpg
       # - run: |
       #   ${{ matrix.cc }} jpeg.c -o jpeg.o -lm -O3 -ffast-math && ar rcs libjpeg_foo.a jpeg.o
