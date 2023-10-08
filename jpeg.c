@@ -1,3 +1,4 @@
+#include "jpeg.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -84,37 +85,10 @@
 
 #define COM 0xFE
 
-struct HuffmanTable {
-  uint8_t *huffsize;
-  uint16_t *huffcode;
-  uint8_t *huffval;
-  uint16_t mincode[MAX_HUFFMAN_CODE_LENGTH];
-  int32_t maxcode[MAX_HUFFMAN_CODE_LENGTH];
-  uint8_t valptr[MAX_HUFFMAN_CODE_LENGTH];
-};
-
-struct Component {
-  uint8_t x_sampling_factor;
-  uint8_t y_sampling_factor;
-  uint8_t q_table_id;
-};
-
-struct JPEGState {
-  uint8_t encoding;
-  uint16_t width;
-  uint16_t height;
-  uint8_t n_components;
-  uint16_t q_tables[4][BLOCK_SIZE * BLOCK_SIZE];
-  struct HuffmanTable h_tables[2][4];
-  struct Component *components;
-  uint8_t *image_buffer;
-};
-
 uint16_t read_be_16(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
 uint8_t upper_half(uint8_t x) { return x >> 4; }
 uint8_t lower_half(uint8_t x) { return x & 0xF; }
 
-int decode_jpeg(FILE *);
 int handle_app0(const uint8_t *, uint16_t);
 int handle_app1(const uint8_t *, uint16_t);
 int handle_dqt(const uint8_t *, uint16_t, struct JPEGState *);
@@ -125,11 +99,8 @@ int handle_sos(const uint8_t *, uint16_t, struct JPEGState *, FILE *);
 int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef, FILE *f,
                       struct HuffmanTable *dc_h_table, struct HuffmanTable *ac_h_table, uint16_t *q_table);
 
-void init_dct_matrix();
 void idct_2d_(double *);
 void ycbcr_to_rgb_(uint8_t *);
-
-int to_ppm(const char *, uint8_t *, unsigned int, unsigned int);
 
 // clang-format off
 // ITU T.81 Figure A.6
@@ -146,20 +117,7 @@ const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
 // clang-format on
 double DCT_MATRIX[BLOCK_SIZE][BLOCK_SIZE];
 
-int main(int argc, char *argv[]) {
-  check(argc == 1, "No input\n");
-
-  FILE *f;
-  if ((f = fopen(argv[1], "rb")) == NULL) {
-    fprintf(stderr, "Failed to open %s\n", argv[1]);
-    return 1;
-  }
-  init_dct_matrix();
-  return decode_jpeg(f);
-}
-
-int decode_jpeg(FILE *f) {
-  struct JPEGState jpeg_state;
+int decode_jpeg(FILE *f, struct JPEGState *jpeg_state) {
   uint8_t marker[2];
   uint16_t length;
   uint8_t *payload = NULL;
@@ -203,25 +161,25 @@ int decode_jpeg(FILE *f) {
 
     case DQT:
       fprintf(stderr, "DQT (length = %d)\n", length);
-      if (handle_dqt(payload, length, &jpeg_state))
+      if (handle_dqt(payload, length, jpeg_state))
         return 1;
       break;
 
     case DHT:
       fprintf(stderr, "DHT (length = %d)\n", length);
-      if (handle_dht(payload, length, &jpeg_state))
+      if (handle_dht(payload, length, jpeg_state))
         return 1;
       break;
 
     case SOF0:
       fprintf(stderr, "SOF0 (length = %d)\n", length);
-      if (handle_sof0(payload, length, &jpeg_state))
+      if (handle_sof0(payload, length, jpeg_state))
         return 1;
       break;
 
     case SOS:
       fprintf(stderr, "SOS\n");
-      if (handle_sos(payload, length, &jpeg_state, f))
+      if (handle_sos(payload, length, jpeg_state, f))
         return 1;
       break;
 
@@ -238,10 +196,6 @@ int decode_jpeg(FILE *f) {
     try_free(payload);
     fprintf(stderr, "\n");
   }
-  to_ppm("output.ppm", jpeg_state.image_buffer, jpeg_state.width, jpeg_state.height);
-
-  try_free(jpeg_state.image_buffer);
-  try_free(jpeg_state.components);
 
   return 0;
 }
@@ -610,19 +564,4 @@ void ycbcr_to_rgb_(uint8_t *x) {
   x[0] = clip(round(r), 0, 255);
   x[1] = clip(round(g), 0, 255);
   x[2] = clip(round(b), 0, 255);
-}
-
-int to_ppm(const char *filename, uint8_t *image_buffer, unsigned int width, unsigned int height) {
-  FILE *f = fopen(filename, "w");
-  check(f == NULL, "Failed to open file to write");
-
-  fprintf(f, "P3\n%d %d\n255\n", width, height);
-  for (int j = 0; j < height; j++)
-    for (int i = 0; i < width; i++) {
-      for (int c = 0; c < 3; c++)
-        fprintf(f, "%d ", image_buffer[(j * width + i) * 3 + c]);
-      fprintf(f, "\n");
-    }
-
-  return 0;
 }
