@@ -34,5 +34,6 @@ jobs:
       - uses: actions/checkout@v3
       - run: curl ${{ env.sample_image_url }} -o sample.jpg
       - uses: ilammy/msvc-dev-cmd@v1
-      - run: cl jpeg.c && ./jpeg sample.jpg
-      - run: cl jpeg.c /O2 /fp:fast && ./jpeg sample.jpg
+      - run: cl /c jpeg.c && lib jpeg.obj
+      - run: cl test.c jpeg.lib && ./test sample.jpg
+      # - run: cl jpeg.c /O2 /fp:fast && ./jpeg sample.jpg
