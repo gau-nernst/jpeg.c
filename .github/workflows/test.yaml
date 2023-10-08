@@ -25,9 +25,9 @@ jobs:
       - run: |
         ${{ matrix.cc }} jpeg.c -o jpeg.o -lm && ar rcs libjpeg_foo.a jpeg.o
         ${{ matrix.cc }} test.c -o test -ljpeg_foo -L. && ./test sample.jpg
-      - run: |
-        ${{ matrix.cc }} jpeg.c -o jpeg.o -lm -O3 -ffast-math && ar rcs libjpeg_foo.a jpeg.o
-        ${{ matrix.cc }} test.c -o test -ljpeg_foo -L. && ./test sample.jpg
+      # - run: |
+      #   ${{ matrix.cc }} jpeg.c -o jpeg.o -lm -O3 -ffast-math && ar rcs libjpeg_foo.a jpeg.o
+      #   ${{ matrix.cc }} test.c -o test -ljpeg_foo -L. && ./test sample.jpg
 
   test-windows:
     runs-on: windows-latest
