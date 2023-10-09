@@ -1,0 +1,7 @@
+*.o
+*.a
+*.so
+
+# python
+build/
+*.egg-info/
