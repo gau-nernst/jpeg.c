@@ -390,7 +390,6 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
   uint16_t n_y_blocks = ceil_div(jpeg_state->height, BLOCK_SIZE);
 
   int16_t dc_coefs[3] = {0};
-  uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
   uint8_t *mcu;
   try_malloc(mcu, mcu_width * mcu_height * n_components);
 
@@ -406,6 +405,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
 
         for (int y = 0; y < component->y_sampling_factor; y++)
           for (int x = 0; x < component->x_sampling_factor; x++) {
+            uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
             sof0_decode_block(block_u8, dc_coefs + c, f, dc_h_table, ac_h_table, q_table);
 
             // place to mcu. A.2.3
