@@ -10,4 +10,4 @@ test: static_lib
 	./test sample.jpg
 
 format:
-	clang-format -i jpeg.c test.c
+	clang-format -i jpeg.c jpeg.h test.c jpeg_python/jpeg_python.c

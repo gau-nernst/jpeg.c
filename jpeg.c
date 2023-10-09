@@ -40,12 +40,12 @@
 #define min(x, y) (((x) < (y)) ? (x) : (y))
 #define clip(x, lower, higher) min(max(x, lower), higher)
 
-// ITU-T.81 F.1.2.2.3
-#define EOB 0x00
-#define ZRL 0xF0
-
-// ITU-T.81 Table B.1
 enum MARKER {
+  // ITU-T.81 F.1.2.2.3
+  EOB = 0x00,
+  ZRL = 0xF0,
+
+  // ITU-T.81 Table B.1
   TEM = 0x01,
 
   SOF0 = 0xC0,
@@ -93,13 +93,13 @@ static uint8_t lower_half(uint8_t x) { return x & 0xF; }
 
 static int handle_app0(const uint8_t *, uint16_t);
 static int handle_app1(const uint8_t *, uint16_t);
-static int handle_dqt(const uint8_t *, uint16_t, struct JPEGState *);
-static int handle_dht(const uint8_t *, uint16_t, struct JPEGState *);
-static int handle_sof0(const uint8_t *, uint16_t, struct JPEGState *);
-static int handle_sos(const uint8_t *, uint16_t, struct JPEGState *, FILE *);
+static int handle_dqt(const uint8_t *, uint16_t, JPEGState *);
+static int handle_dht(const uint8_t *, uint16_t, JPEGState *);
+static int handle_sof0(const uint8_t *, uint16_t, JPEGState *);
+static int handle_sos(const uint8_t *, uint16_t, JPEGState *, FILE *);
 
 static int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef, FILE *f,
-                             struct HuffmanTable *dc_h_table, struct HuffmanTable *ac_h_table, uint16_t *q_table);
+                             HuffmanTable *dc_h_table, HuffmanTable *ac_h_table, uint16_t *q_table);
 
 static void idct_2d_(double *);
 static void ycbcr_to_rgb_(uint8_t *);
@@ -119,7 +119,7 @@ const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
 // clang-format on
 double DCT_MATRIX[BLOCK_SIZE][BLOCK_SIZE];
 
-int decode_jpeg(FILE *f, struct JPEGState *jpeg_state) {
+int decode_jpeg(FILE *f, JPEGState *jpeg_state) {
   uint8_t marker[2];
   uint16_t length;
   uint8_t *payload = NULL;
@@ -233,7 +233,7 @@ int handle_app1(const uint8_t *payload, uint16_t length) {
 
 // ITU-T.81 B.2.4.1
 // there can be multiple quantization tables within 1 DQT segment
-int handle_dqt(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_state) {
+int handle_dqt(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
   int offset = 0;
   while (offset < length) {
     uint8_t precision = upper_half(payload[offset]);
@@ -265,7 +265,7 @@ int handle_dqt(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
 
 // ITU-T.81 B.2.4.2
 // there can be multiple huffman tables within 1 DHT segment
-int handle_dht(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_state) {
+int handle_dht(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
   int offset = 0;
   while (offset < length) {
     uint8_t class = upper_half(payload[offset]);
@@ -274,7 +274,7 @@ int handle_dht(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
     check(length < offset + 1 + MAX_HUFFMAN_CODE_LENGTH, "Payload is too short\n");
 
     // ITU-T.81 Annex C: create Huffman table
-    struct HuffmanTable *h_table = &jpeg_state->h_tables[class][identifier];
+    HuffmanTable *h_table = &jpeg_state->h_tables[class][identifier];
     int n_codes = 0;
     for (int i = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++)
       n_codes += payload[offset + 1 + i];
@@ -320,7 +320,7 @@ int handle_dht(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
   return 0;
 }
 
-int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_state) {
+int handle_sof0(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
   jpeg_state->encoding = SOF0;
 
   // Table B.2
@@ -337,12 +337,12 @@ int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_
   check(precision != 8, "Only 8-bit image is supported\n");
   check((payload[5] != 1) & (payload[5] != 3), "Only 1 or 3 channels are supported");
   check(length < 6 + jpeg_state->n_components * 3, "Payload is too short\n");
-  try_malloc(jpeg_state->components, sizeof(struct Component) * jpeg_state->n_components);
+  try_malloc(jpeg_state->components, sizeof(Component) * jpeg_state->n_components);
   try_malloc(jpeg_state->image_buffer, jpeg_state->height * jpeg_state->width * jpeg_state->n_components);
 
   for (int i = 0; i < jpeg_state->n_components; i++) {
     uint8_t component_id = payload[6 + i * 3]; // this should be i+1, according to JFIF
-    struct Component *component = &jpeg_state->components[component_id - 1];
+    Component *component = &jpeg_state->components[component_id - 1];
     component->x_sampling_factor = upper_half(payload[7 + i * 3]);
     component->y_sampling_factor = lower_half(payload[7 + i * 3]);
     component->q_table_id = payload[8 + i * 3];
@@ -354,7 +354,7 @@ int handle_sof0(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_
   return 0;
 }
 
-int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_state, FILE *f) {
+int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, FILE *f) {
   check(jpeg_state->encoding != SOF0, "Only Baseline JPEG is support\n");
 
   uint8_t n_components = payload[0];
@@ -379,7 +379,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
   // calculate number of MCUs based on chroma-subsampling
   uint16_t max_x_sampling = 0, max_y_sampling = 0;
   for (int i = 0; i < jpeg_state->n_components; i++) {
-    struct Component *component = jpeg_state->components + i;
+    Component *component = jpeg_state->components + i;
     max_x_sampling = max(max_x_sampling, component->x_sampling_factor);
     max_y_sampling = max(max_y_sampling, component->y_sampling_factor);
   }
@@ -399,9 +399,9 @@ int handle_sos(const uint8_t *payload, uint16_t length, struct JPEGState *jpeg_s
   for (int mcu_y = 0; mcu_y < n_y_blocks / max_y_sampling; mcu_y++)
     for (int mcu_x = 0; mcu_x < n_x_blocks / max_x_sampling; mcu_x++) {
       for (int c = 0; c < n_components; c++) {
-        struct Component *component = &jpeg_state->components[payload[1 + c * 2] - 1];
-        struct HuffmanTable *dc_h_table = &jpeg_state->h_tables[0][upper_half(payload[2 + c * 2])];
-        struct HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][lower_half(payload[2 + c * 2])];
+        Component *component = &jpeg_state->components[payload[1 + c * 2] - 1];
+        HuffmanTable *dc_h_table = &jpeg_state->h_tables[0][upper_half(payload[2 + c * 2])];
+        HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][lower_half(payload[2 + c * 2])];
         uint16_t *q_table = jpeg_state->q_tables[component->q_table_id];
 
         for (int y = 0; y < component->y_sampling_factor; y++)
@@ -478,7 +478,7 @@ uint16_t receive(FILE *f, uint16_t ssss) {
 }
 
 // Figure F.16
-uint16_t decode(FILE *f, struct HuffmanTable *h_table) {
+uint16_t decode(FILE *f, HuffmanTable *h_table) {
   int i = -1;
   uint16_t code = nextbit(f);
 
@@ -487,8 +487,8 @@ uint16_t decode(FILE *f, struct HuffmanTable *h_table) {
   return h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
 }
 
-int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef, FILE *f,
-                      struct HuffmanTable *dc_h_table, struct HuffmanTable *ac_h_table, uint16_t *q_table) {
+int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef, FILE *f, HuffmanTable *dc_h_table,
+                      HuffmanTable *ac_h_table, uint16_t *q_table) {
   // NOTE: block can be negative
   int32_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
   double block_f64[BLOCK_SIZE][BLOCK_SIZE];
