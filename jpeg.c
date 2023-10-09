@@ -87,22 +87,22 @@ enum MARKER {
   COM = 0xFE,
 };
 
-uint16_t read_be_16(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
-uint8_t upper_half(uint8_t x) { return x >> 4; }
-uint8_t lower_half(uint8_t x) { return x & 0xF; }
+static uint16_t read_be_16(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
+static uint8_t upper_half(uint8_t x) { return x >> 4; }
+static uint8_t lower_half(uint8_t x) { return x & 0xF; }
 
-int handle_app0(const uint8_t *, uint16_t);
-int handle_app1(const uint8_t *, uint16_t);
-int handle_dqt(const uint8_t *, uint16_t, struct JPEGState *);
-int handle_dht(const uint8_t *, uint16_t, struct JPEGState *);
-int handle_sof0(const uint8_t *, uint16_t, struct JPEGState *);
-int handle_sos(const uint8_t *, uint16_t, struct JPEGState *, FILE *);
+static int handle_app0(const uint8_t *, uint16_t);
+static int handle_app1(const uint8_t *, uint16_t);
+static int handle_dqt(const uint8_t *, uint16_t, struct JPEGState *);
+static int handle_dht(const uint8_t *, uint16_t, struct JPEGState *);
+static int handle_sof0(const uint8_t *, uint16_t, struct JPEGState *);
+static int handle_sos(const uint8_t *, uint16_t, struct JPEGState *, FILE *);
 
-int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef, FILE *f,
-                      struct HuffmanTable *dc_h_table, struct HuffmanTable *ac_h_table, uint16_t *q_table);
+static int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef, FILE *f,
+                             struct HuffmanTable *dc_h_table, struct HuffmanTable *ac_h_table, uint16_t *q_table);
 
-void idct_2d_(double *);
-void ycbcr_to_rgb_(uint8_t *);
+static void idct_2d_(double *);
+static void ycbcr_to_rgb_(uint8_t *);
 
 // clang-format off
 // ITU T.81 Figure A.6
