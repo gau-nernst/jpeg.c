@@ -5,5 +5,5 @@ static_lib:
 
 test: static_lib
 	clang-format -i test.c
-	cc test.c -o test -ljpeg_foo -L.
+	cc test.c -o test -ljpeg_foo -lm -L.
 	./test sample.jpg
