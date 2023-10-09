@@ -500,8 +500,7 @@ int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef
   block[0] = dc_coef[0] * q_table[0];
 
   // decode AC: F.2.2.2
-  int k = 1;
-  while (k < BLOCK_SIZE * BLOCK_SIZE) {
+  for (int k = 1; k < BLOCK_SIZE * BLOCK_SIZE;) {
     uint16_t rs = decode(f, ac_h_table);
     if (rs == ZRL)
       k += 16;
