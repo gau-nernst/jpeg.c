@@ -45,45 +45,47 @@
 #define ZRL 0xF0
 
 // ITU-T.81 Table B.1
-#define TEM 0x01
+enum MARKER {
+  TEM = 0x01,
 
-#define SOF0 0xC0
-#define SOF1 0xC1
-#define SOF2 0xC2
-#define SOF3 0xC3
+  SOF0 = 0xC0,
+  SOF1 = 0xC1,
+  SOF2 = 0xC2,
+  SOF3 = 0xC3,
 
-#define DHT 0xC4
+  DHT = 0xC4,
 
-#define SOF5 0xC5
-#define SOF6 0xC6
-#define SOF7 0xC7
+  SOF5 = 0xC5,
+  SOF6 = 0xC6,
+  SOF7 = 0xC7,
 
-#define JPG 0xC8
-#define SOF9 0xC9
-#define SOF10 0xCA
-#define SOF11 0xCB
+  JPG = 0xC8,
+  SOF9 = 0xC9,
+  SOF10 = 0xCA,
+  SOF11 = 0xCB,
 
-#define DAC 0xCC
+  DAC = 0xCC,
 
-#define SOF13 0xC
-#define SOF14 0xC
-#define SOF15 0xC
+  SOF13 = 0xC,
+  SOF14 = 0xC,
+  SOF15 = 0xC,
 
-#define RST0 0xD0
+  RST0 = 0xD0,
 
-#define SOI 0xD8
-#define EOI 0xD9
-#define SOS 0xDA
-#define DQT 0xDB
-#define DNL 0xDC
-#define DRI 0xDD
-#define DHP 0xDE
-#define EXP 0xDF
+  SOI = 0xD8,
+  EOI = 0xD9,
+  SOS = 0xDA,
+  DQT = 0xDB,
+  DNL = 0xDC,
+  DRI = 0xDD,
+  DHP = 0xDE,
+  EXP = 0xDF,
 
-#define APP0 0xE0
-#define APP1 0xE1
+  APP0 = 0xE0,
+  APP1 = 0xE1,
 
-#define COM 0xFE
+  COM = 0xFE,
+};
 
 uint16_t read_be_16(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
 uint8_t upper_half(uint8_t x) { return x >> 4; }
