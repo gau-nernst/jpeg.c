@@ -14,11 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            cc: gcc
-          - os: macos-latest
-            cc: clang
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v3
       - run: curl ${{ env.sample_image_url }} -o sample.jpg
