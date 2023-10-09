@@ -1,17 +1,17 @@
 // https://docs.python.org/3/extending/extending.html
-#define PY_SSIZE_T_CLEAN
 #include "jpeg.h"
+
+#define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
 static PyObject *jpeg_python_decode_jpeg(PyObject *self, PyObject *args) {
   char *filename = NULL;
 
-  if (!PyArg_ParseTuple(args, "s", &filename)) {
+  if (!PyArg_ParseTuple(args, "s", &filename))
     return NULL;
-  }
 
   FILE *f = fopen(filename, "rb");
-  struct JPEGState jpeg_state;
+  JPEGState jpeg_state;
 
   if (decode_jpeg(f, &jpeg_state)) {
     if (jpeg_state.components != NULL)
