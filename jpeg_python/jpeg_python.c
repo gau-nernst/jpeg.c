@@ -11,6 +11,10 @@ static PyObject *jpeg_python_decode_jpeg(PyObject *self, PyObject *args) {
     return NULL;
 
   FILE *f = fopen(filename, "rb");
+  if (f == NULL) {
+    PyErr_SetString(PyExc_FileNotFoundError, filename);
+    return NULL;
+  }
   JPEGState jpeg_state;
 
   if (decode_jpeg(f, &jpeg_state)) {
@@ -18,12 +22,17 @@ static PyObject *jpeg_python_decode_jpeg(PyObject *self, PyObject *args) {
       free(jpeg_state.components);
     if (jpeg_state.image_buffer != NULL)
       free(jpeg_state.image_buffer);
-    // TODO: set error code
+
+    PyErr_SetString(PyExc_RuntimeError, "Error while decode JPEG");
     return NULL;
   }
 
-  return PyMemoryView_FromMemory((char *)jpeg_state.image_buffer,
-                                 jpeg_state.width * jpeg_state.height * jpeg_state.n_components, PyBUF_READ);
+  char *image_buffer = (char *)jpeg_state.image_buffer;
+  int image_size = jpeg_state.width * jpeg_state.height * jpeg_state.n_components;
+  free(jpeg_state.components);
+
+  PyObject *image = PyMemoryView_FromMemory(image_buffer, image_size, PyBUF_READ);
+  return image;
 }
 
 // method table
