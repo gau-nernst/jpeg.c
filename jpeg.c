@@ -102,6 +102,8 @@ static int handle_dht(const uint8_t *, uint16_t, JPEGState *);
 static int handle_sof0(const uint8_t *, uint16_t, JPEGState *);
 static int handle_sos(const uint8_t *, uint16_t, JPEGState *, FILE *);
 
+int is_rst = 0;
+
 static int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int *dc_coef, FILE *f, HuffmanTable *dc_h_table,
                              HuffmanTable *ac_h_table, uint16_t *q_table);
 
@@ -185,6 +187,7 @@ int decode_jpeg(FILE *f, JPEGState *jpeg_state) {
 
     case DRI:
       fprintf(stderr, "DRI (length = %d)\n", length);
+      fprintf(stderr, "  restart interval = %d\n", payload[0]);
       jpeg_state->restart_interval = payload[0];
       break;
 
@@ -394,10 +397,15 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
     int dc_coef = 0;
 
     for (int y = 0; y < n_y_blocks; y++)
-      for (int x = 0; x < n_y_blocks; x++) {
+      for (int x = 0; x < n_x_blocks; x++) {
         uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
         check(sof0_decode_block(block_u8, &dc_coef, f, dc_h_table, ac_h_table, q_table));
+        if (is_rst) {
+          dc_coef = 0;
+          is_rst = 0;
+        }
 
+        // place to image buffer
         for (int j = 0; j < BLOCK_SIZE; j++) {
           int row_idx = y * BLOCK_SIZE + j;
           if (row_idx >= jpeg_state->height)
@@ -503,7 +511,9 @@ int nextbit(FILE *f, uint16_t *out) {
       try_fread(&b2, 1, 1, f);
       if (b2 != 0) {
         if ((RST0 <= b2) & (b2 < RST0 + 8)) {
+          fprintf(stderr, "Encounter RST marker %d\n", b2 - RST0);
           cnt = 0;
+          is_rst = 1;
           continue;
         } else if (b2 == DNL) {
           fprintf(stderr, "DNL marker. Not implemented\n");
@@ -621,7 +631,7 @@ void idct_2d_(double *x) {
 // JFIF p.3
 void ycbcr_to_rgb_(uint8_t *x) {
   // clang-format off
-  double r = x[0]                  + 1.402   * (x[2] - 128);
+  double r = x[0]                          + 1.402   * (x[2] - 128);
   double g = x[0] - 0.34414 * (x[1] - 128) - 0.71414 * (x[2] - 128);
   double b = x[0] + 1.772   * (x[1] - 128);
   // clang-format on
