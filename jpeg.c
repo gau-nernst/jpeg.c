@@ -183,6 +183,11 @@ int decode_jpeg(FILE *f, JPEGState *jpeg_state) {
         return 1;
       break;
 
+    case DRI:
+      fprintf(stderr, "DRI (length = %d)\n", length);
+      jpeg_state->restart_interval = payload[0];
+      break;
+
     case SOS:
       fprintf(stderr, "SOS\n");
       if (handle_sos(payload, length, jpeg_state, f))
@@ -404,7 +409,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
               break;
 
             jpeg_state->image_buffer[(row_idx * jpeg_state->width + col_idx) * jpeg_state->n_components + channel_id] =
-                block_u8[j * BLOCK_SIZE + i];
+                block_u8[j][i];
           }
         }
       }
@@ -488,7 +493,7 @@ int nextbit(FILE *f, uint16_t *out) {
   // impure function
   static uint8_t b, cnt = 0;
 
-  if (cnt == 0) {
+  while (cnt == 0) {
     try_fread(&b, 1, 1, f);
     cnt = 8;
 
@@ -497,11 +502,16 @@ int nextbit(FILE *f, uint16_t *out) {
       uint8_t b2;
       try_fread(&b2, 1, 1, f);
       if (b2 != 0) {
-        if (b2 != DNL)
-          printf("%X\n", b2);
-        assert(b2 == DNL, "Found invalid data");
-        fprintf(stderr, "DNL marker. Not implemented\n");
-        return 1;
+        if ((RST0 <= b2) & (b2 < RST0 + 8)) {
+          cnt = 0;
+          continue;
+        } else if (b2 == DNL) {
+          fprintf(stderr, "DNL marker. Not implemented\n");
+          return 1;
+        } else {
+          fprintf(stderr, "Found a marker in scan %X. Decode error?", b2);
+          return 1;
+        }
       }
     }
   }
