@@ -4,23 +4,15 @@ C port of https://github.com/gau-nernst/jpeg-python
 
 Only JPEG Baseline is implemented.
 
-Linux
+Linux and MacOS
 
 ```bash
-gcc jpeg.c -o jpeg -lm
-./jpeg sample.jpg
-```
-
-MacOS
-
-```bash
-clang jpeg.c -o jpeg
-./jpeg sample.jpg
+make test
 ```
 
 Windows
 
 ```bash
-cl jpeg.c
-./jpeg sample.jpg
+cl /c jpeg.c && lib jpeg.obj
+cl test.c jpeg.lib && ./test sample.jpg
 ```
