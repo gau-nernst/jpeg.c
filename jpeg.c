@@ -374,12 +374,44 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
   fprintf(stderr, "  ah = %d\n", payload[3 + n_components * 2]);
   fprintf(stderr, "  al = %d\n", payload[4 + n_components * 2]);
 
+  int n_x_blocks = ceil_div(jpeg_state->width, BLOCK_SIZE);
+  int n_y_blocks = ceil_div(jpeg_state->height, BLOCK_SIZE);
+
   // A.2.2
   if (n_components == 1) {
-    fprintf(stderr, "Decode 1-component scan is not implemented\n");
-    return 1;
+    // fprintf(stderr, "Decode 1-component scan is not implemented\n");
+    // ignore sampling factor
+    int channel_id = payload[1] - 1;
+    Component *component = &jpeg_state->components[channel_id];
+    HuffmanTable *dc_h_table = &jpeg_state->h_tables[0][upper_half(payload[2])];
+    HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][lower_half(payload[2])];
+    uint16_t *q_table = jpeg_state->q_tables[component->q_table_id];
+    int dc_coef = 0;
+
+    for (int y = 0; y < n_y_blocks; y++)
+      for (int x = 0; x < n_y_blocks; x++) {
+        uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
+        check(sof0_decode_block(block_u8, &dc_coef, f, dc_h_table, ac_h_table, q_table));
+
+        for (int j = 0; j < BLOCK_SIZE; j++) {
+          int row_idx = y * BLOCK_SIZE + j;
+          if (row_idx >= jpeg_state->height)
+            break;
+
+          for (int i = 0; i < BLOCK_SIZE; i++) {
+            int col_idx = x * BLOCK_SIZE + i;
+            if (col_idx >= jpeg_state->width)
+              break;
+
+            jpeg_state->image_buffer[(row_idx * jpeg_state->width + col_idx) * jpeg_state->n_components + channel_id] =
+                block_u8[j * BLOCK_SIZE + i];
+          }
+        }
+      }
+    return 0;
   }
 
+  // A.2.3
   // calculate number of MCUs based on chroma-subsampling
   int max_x_sampling = 0, max_y_sampling = 0;
   for (int i = 0; i < jpeg_state->n_components; i++) {
@@ -390,9 +422,6 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
   int mcu_width = BLOCK_SIZE * max_x_sampling;
   int mcu_height = BLOCK_SIZE * max_y_sampling;
 
-  int n_x_blocks = ceil_div(jpeg_state->width, BLOCK_SIZE);
-  int n_y_blocks = ceil_div(jpeg_state->height, BLOCK_SIZE);
-
   int dc_coefs[3] = {0};
   uint8_t *mcu;
   try_malloc(mcu, mcu_width * mcu_height * n_components);
@@ -402,7 +431,8 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
   for (int mcu_y = 0; mcu_y < n_y_blocks / max_y_sampling; mcu_y++)
     for (int mcu_x = 0; mcu_x < n_x_blocks / max_x_sampling; mcu_x++) {
       for (int c = 0; c < n_components; c++) {
-        Component *component = &jpeg_state->components[payload[1 + c * 2] - 1];
+        int channel_id = payload[1 + c * 2] - 1;
+        Component *component = &jpeg_state->components[channel_id];
         HuffmanTable *dc_h_table = &jpeg_state->h_tables[0][upper_half(payload[2 + c * 2])];
         HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][lower_half(payload[2 + c * 2])];
         uint16_t *q_table = jpeg_state->q_tables[component->q_table_id];
@@ -437,9 +467,11 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
             break;
 
           ycbcr_to_rgb_(mcu + (j * mcu_width + i) * n_components);
-          for (int c = 0; c < n_components; c++)
-            jpeg_state->image_buffer[(row_idx * jpeg_state->width + col_idx) * n_components + c] =
+          for (int c = 0; c < n_components; c++) {
+            int channel_id = payload[1 + c * 2] - 1;
+            jpeg_state->image_buffer[(row_idx * jpeg_state->width + col_idx) * jpeg_state->n_components + channel_id] =
                 mcu[(j * mcu_width + i) * n_components + c];
+          }
         }
       }
     }
@@ -465,6 +497,8 @@ int nextbit(FILE *f, uint16_t *out) {
       uint8_t b2;
       try_fread(&b2, 1, 1, f);
       if (b2 != 0) {
+        if (b2 != DNL)
+          printf("%X\n", b2);
         assert(b2 == DNL, "Found invalid data");
         fprintf(stderr, "DNL marker. Not implemented\n");
         return 1;
