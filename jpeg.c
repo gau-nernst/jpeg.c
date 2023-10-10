@@ -99,8 +99,8 @@ static int handle_dht(const uint8_t *, uint16_t, JPEGState *);
 static int handle_sof0(const uint8_t *, uint16_t, JPEGState *);
 static int handle_sos(const uint8_t *, uint16_t, JPEGState *, FILE *);
 
-static int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef, FILE *f,
-                             HuffmanTable *dc_h_table, HuffmanTable *ac_h_table, uint16_t *q_table);
+static int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int *dc_coef, FILE *f, HuffmanTable *dc_h_table,
+                             HuffmanTable *ac_h_table, uint16_t *q_table);
 
 static void idct_2d_(double *);
 static void ycbcr_to_rgb_(uint8_t *);
@@ -378,19 +378,19 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
   }
 
   // calculate number of MCUs based on chroma-subsampling
-  uint16_t max_x_sampling = 0, max_y_sampling = 0;
+  int max_x_sampling = 0, max_y_sampling = 0;
   for (int i = 0; i < jpeg_state->n_components; i++) {
     Component *component = jpeg_state->components + i;
     max_x_sampling = max(max_x_sampling, component->x_sampling_factor);
     max_y_sampling = max(max_y_sampling, component->y_sampling_factor);
   }
-  uint16_t mcu_width = BLOCK_SIZE * max_x_sampling;
-  uint16_t mcu_height = BLOCK_SIZE * max_y_sampling;
+  int mcu_width = BLOCK_SIZE * max_x_sampling;
+  int mcu_height = BLOCK_SIZE * max_y_sampling;
 
-  uint16_t n_x_blocks = ceil_div(jpeg_state->width, BLOCK_SIZE);
-  uint16_t n_y_blocks = ceil_div(jpeg_state->height, BLOCK_SIZE);
+  int n_x_blocks = ceil_div(jpeg_state->width, BLOCK_SIZE);
+  int n_y_blocks = ceil_div(jpeg_state->height, BLOCK_SIZE);
 
-  int16_t dc_coefs[3] = {0};
+  int dc_coefs[3] = {0};
   uint8_t *mcu;
   try_malloc(mcu, mcu_width * mcu_height * n_components);
 
@@ -410,6 +410,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
             sof0_decode_block(block_u8, dc_coefs + c, f, dc_h_table, ac_h_table, q_table);
 
             // place to mcu. A.2.3
+            // JFIF p.4
             int n_repeat_y = max_y_sampling / component->y_sampling_factor;
             int n_repeat_x = max_x_sampling / component->x_sampling_factor;
             for (int j = 0; j < BLOCK_SIZE * n_repeat_y; j++) {
@@ -443,7 +444,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
 }
 
 // Figure F.12
-int16_t extend(uint16_t v, uint16_t t) { return v < (1 << (t - 1)) ? v + (-1 << t) + 1 : v; }
+int32_t extend(uint16_t v, uint16_t t) { return v < (1 << (t - 1)) ? v + (-1 << t) + 1 : v; }
 
 // Figure F.18
 uint8_t nextbit(FILE *f) {
@@ -486,15 +487,16 @@ uint16_t decode(FILE *f, HuffmanTable *h_table) {
   return h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
 }
 
-int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef, FILE *f, HuffmanTable *dc_h_table,
+int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int *dc_coef, FILE *f, HuffmanTable *dc_h_table,
                       HuffmanTable *ac_h_table, uint16_t *q_table) {
   // NOTE: block can be negative
+  // NOTE: dequantized value can be out-of-range
   int32_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
   double block_f64[BLOCK_SIZE][BLOCK_SIZE];
 
   // decode DC: F.2.2.1
   uint16_t t = decode(f, dc_h_table);
-  int16_t diff = extend(receive(f, t), t);
+  int32_t diff = extend(receive(f, t), t);
   dc_coef[0] += diff;
   block[0] = dc_coef[0] * q_table[0];
 
@@ -506,8 +508,8 @@ int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef
     else if (rs == EOB)
       break;
     else {
-      uint16_t rrrr = upper_half(rs);
-      uint16_t ssss = lower_half(rs);
+      int rrrr = upper_half(rs);
+      int ssss = lower_half(rs);
       k += rrrr;
       assert(k < BLOCK_SIZE * BLOCK_SIZE, "Found invalid code");
       block[k] = extend(receive(f, ssss), ssss) * q_table[k];
