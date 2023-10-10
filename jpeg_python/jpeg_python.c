@@ -31,6 +31,7 @@ static PyObject *jpeg_python_decode_jpeg(PyObject *self, PyObject *args) {
   int image_size = jpeg_state.width * jpeg_state.height * jpeg_state.n_components;
   free(jpeg_state.components);
 
+  // TODO: set refcount somehow for image_buffer
   PyObject *image = PyMemoryView_FromMemory(image_buffer, image_size, PyBUF_READ);
   return image;
 }
