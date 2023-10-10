@@ -1,5 +1,5 @@
 static_lib:
-	cc -c -fPIC jpeg.c -o jpeg.o
+	cc -c jpeg.c -o jpeg.o
 	ar rcs libjpeg_foo.a jpeg.o
 
 python:
