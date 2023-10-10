@@ -412,15 +412,13 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
             // place to mcu. A.2.3
             int n_repeat_y = max_y_sampling / component->y_sampling_factor;
             int n_repeat_x = max_x_sampling / component->x_sampling_factor;
-            for (int j = 0; j < BLOCK_SIZE; j++)
-              for (int repeat_y = 0; repeat_y < n_repeat_y; repeat_y++) {
-                int row_idx = y * BLOCK_SIZE + j * n_repeat_y + repeat_y;
-                for (int i = 0; i < BLOCK_SIZE; i++)
-                  for (int repeat_x = 0; repeat_x < n_repeat_x; repeat_x++) {
-                    int col_idx = x * BLOCK_SIZE + i * n_repeat_x + repeat_x;
-                    mcu[(row_idx * mcu_width + col_idx) * n_components + c] = block_u8[j][i];
-                  }
+            for (int j = 0; j < BLOCK_SIZE * n_repeat_y; j++) {
+              int row_idx = y * BLOCK_SIZE + j;
+              for (int i = 0; i < BLOCK_SIZE * n_repeat_x; i++) {
+                int col_idx = x * BLOCK_SIZE + i;
+                mcu[(row_idx * mcu_width + col_idx) * n_components + c] = block_u8[j / n_repeat_y][i / n_repeat_x];
               }
+            }
           }
       }
 
