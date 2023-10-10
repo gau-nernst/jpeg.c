@@ -16,6 +16,9 @@
     fprintf(stderr, "\n");                                                                                             \
     return 1;                                                                                                          \
   }
+#define check(condition)                                                                                               \
+  if (condition)                                                                                                       \
+    return 1;
 
 #define try_malloc(ptr, size) assert((ptr = malloc(size)) != NULL, "Failed to allocate memory")
 #define try_fread(ptr, size, n_items, stream)                                                                          \
@@ -407,7 +410,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
         for (int y = 0; y < component->y_sampling_factor; y++)
           for (int x = 0; x < component->x_sampling_factor; x++) {
             uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
-            sof0_decode_block(block_u8, dc_coefs + c, f, dc_h_table, ac_h_table, q_table);
+            check(sof0_decode_block(block_u8, dc_coefs + c, f, dc_h_table, ac_h_table, q_table));
 
             // place to mcu. A.2.3
             // JFIF p.4
@@ -444,10 +447,12 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
 }
 
 // Figure F.12
-int32_t extend(uint16_t v, uint16_t t) { return v < (1 << (t - 1)) ? v + (-1 << t) + 1 : v; }
+int32_t extend(uint16_t value, uint16_t n_bits) {
+  return value < (1 << (n_bits - 1)) ? value + (-1 << n_bits) + 1 : value;
+}
 
 // Figure F.18
-uint8_t nextbit(FILE *f) {
+int nextbit(FILE *f, uint16_t *out) {
   // impure function
   static uint8_t b, cnt = 0;
 
@@ -466,25 +471,33 @@ uint8_t nextbit(FILE *f) {
       }
     }
   }
-  return (b >> --cnt) & 1;
+  *out = (b >> --cnt) & 1;
+  return 0;
 }
 
 // Figure F.17
-uint16_t receive(FILE *f, uint16_t ssss) {
-  uint16_t v = 0;
-  for (int i = 0; i < ssss; i++)
-    v = (v << 1) + nextbit(f);
-  return v;
+int receive(FILE *f, uint16_t ssss, uint16_t *out) {
+  uint16_t v = 0, temp;
+  for (int i = 0; i < ssss; i++) {
+    check(nextbit(f, &temp));
+    v = (v << 1) + temp;
+  }
+  *out = v;
+  return 0;
 }
 
 // Figure F.16
-uint16_t decode(FILE *f, HuffmanTable *h_table) {
+int decode(FILE *f, HuffmanTable *h_table, uint16_t *out) {
   int i = -1;
-  uint16_t code = nextbit(f);
+  uint16_t code, temp;
+  check(nextbit(f, &code));
 
-  while (code > h_table->maxcode[++i])
-    code = (code << 1) + nextbit(f);
-  return h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
+  while (code > h_table->maxcode[++i]) {
+    check(nextbit(f, &temp));
+    code = (code << 1) + temp;
+  }
+  *out = h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
+  return 0;
 }
 
 int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int *dc_coef, FILE *f, HuffmanTable *dc_h_table,
@@ -495,14 +508,18 @@ int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int *dc_coef, FI
   double block_f64[BLOCK_SIZE][BLOCK_SIZE];
 
   // decode DC: F.2.2.1
-  uint16_t t = decode(f, dc_h_table);
-  int32_t diff = extend(receive(f, t), t);
+  uint16_t n_bits, value;
+  check(decode(f, dc_h_table, &n_bits));
+  check(receive(f, n_bits, &value));
+  int32_t diff = extend(value, n_bits);
+
   dc_coef[0] += diff;
   block[0] = dc_coef[0] * q_table[0];
 
   // decode AC: F.2.2.2
   for (int k = 1; k < BLOCK_SIZE * BLOCK_SIZE;) {
-    uint16_t rs = decode(f, ac_h_table);
+    uint16_t rs;
+    check(decode(f, ac_h_table, &rs));
     if (rs == ZRL)
       k += 16;
     else if (rs == EOB)
@@ -512,7 +529,8 @@ int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int *dc_coef, FI
       int ssss = lower_half(rs);
       k += rrrr;
       assert(k < BLOCK_SIZE * BLOCK_SIZE, "Found invalid code");
-      block[k] = extend(receive(f, ssss), ssss) * q_table[k];
+      check(receive(f, ssss, &value));
+      block[k] = extend(value, ssss) * q_table[k];
       k += 1;
     }
   }
