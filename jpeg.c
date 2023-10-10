@@ -187,8 +187,9 @@ int decode_jpeg(FILE *f, JPEGState *jpeg_state) {
 
     case DRI:
       fprintf(stderr, "DRI (length = %d)\n", length);
-      fprintf(stderr, "  restart interval = %d\n", payload[0]);
-      jpeg_state->restart_interval = payload[0];
+      assert(length >= 2, "Payload not long enough");
+      jpeg_state->restart_interval = read_be_16(payload);
+      fprintf(stderr, "  restart interval = %d\n", jpeg_state->restart_interval);
       break;
 
     case SOS:
@@ -399,6 +400,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
     for (int y = 0; y < n_y_blocks; y++)
       for (int x = 0; x < n_x_blocks; x++) {
         uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
+        // E.2.4
         check(sof0_decode_block(block_u8, &dc_coef, f, dc_h_table, ac_h_table, q_table));
         if (is_rst) {
           dc_coef = 0;
