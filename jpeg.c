@@ -10,20 +10,21 @@
 #define BLOCK_SIZE 8
 #define MAX_HUFFMAN_CODE_LENGTH 16
 
-#define check(condition, msg)                                                                                          \
-  if (condition) {                                                                                                     \
+#define assert(condition, msg)                                                                                         \
+  if (!(condition)) {                                                                                                  \
     fprintf(stderr, msg);                                                                                              \
+    fprintf(stderr, "\n");                                                                                             \
     return 1;                                                                                                          \
   }
 
-#define try_malloc(ptr, size) check((ptr = malloc(size)) == NULL, "Failed to allocate memory\n")
+#define try_malloc(ptr, size) assert((ptr = malloc(size)) != NULL, "Failed to allocate memory")
 #define try_fread(ptr, size, n_items, stream)                                                                          \
-  check(fread(ptr, size, n_items, stream) < (size * n_items), "Failed to read data. Perhaps EOF?\n")
+  assert(fread(ptr, size, n_items, stream) == (size * n_items), "Failed to read data. Perhaps EOF?")
 
 #define try_free(ptr)                                                                                                  \
-  {                                                                                                                    \
-    if (ptr == NULL)                                                                                                   \
-      free(ptr);                                                                                                       \
+  if (ptr != NULL) {                                                                                                   \
+    free(ptr);                                                                                                         \
+    ptr = NULL;                                                                                                        \
   }
 
 #define print_list(prefix, ptr, length, fmt)                                                                           \
@@ -129,7 +130,7 @@ int decode_jpeg(FILE *f, JPEGState *jpeg_state) {
     try_fread(marker, 1, 2, f);
     fprintf(stderr, "%X%X ", marker[0], marker[1]);
 
-    check(marker[0] != 0xFF, "Not a marker\n");
+    assert(marker[0] == 0xFF, "Not a marker");
 
     if (marker[1] == TEM | marker[1] == SOI | marker[1] == EOI | (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
       length = 0;
@@ -207,7 +208,7 @@ int handle_app0(const uint8_t *payload, uint16_t length) {
   fprintf(stderr, "  identifier = %.5s\n", payload); // either JFIF or JFXX
 
   if (strcmp((const char *)payload, "JFIF") == 0) {
-    check(length < 14, "Payload is too short\n");
+    assert(length >= 14, "Payload is too short");
     fprintf(stderr, "  version = %d.%d\n", payload[5], payload[6]);
     fprintf(stderr, "  units = %d\n", payload[7]);
     fprintf(stderr, "  density = (%d, %d)\n", read_be_16(payload + 8), read_be_16(payload + 10));
@@ -239,7 +240,7 @@ int handle_dqt(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
     uint8_t precision = upper_half(payload[offset]);
     uint8_t identifier = lower_half(payload[offset]);
     fprintf(stderr, "  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
-    check(length < offset + 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1), "Payload is too short\n");
+    assert(length >= offset + 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1), "Payload is too short");
 
     uint16_t *q_table;
     q_table = jpeg_state->q_tables[identifier];
@@ -271,14 +272,14 @@ int handle_dht(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
     uint8_t class = upper_half(payload[offset]);
     uint8_t identifier = lower_half(payload[offset]);
     fprintf(stderr, "  class = %d (%s), identifier = %d\n", class, class ? "AC" : "DC", identifier);
-    check(length < offset + 1 + MAX_HUFFMAN_CODE_LENGTH, "Payload is too short\n");
+    assert(length >= offset + 1 + MAX_HUFFMAN_CODE_LENGTH, "Payload is too short");
 
     // ITU-T.81 Annex C: create Huffman table
     HuffmanTable *h_table = &jpeg_state->h_tables[class][identifier];
     int n_codes = 0;
     for (int i = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++)
       n_codes += payload[offset + 1 + i];
-    check(length < offset + 1 + MAX_HUFFMAN_CODE_LENGTH + n_codes, "Payload is too short\n");
+    assert(length >= offset + 1 + MAX_HUFFMAN_CODE_LENGTH + n_codes, "Payload is too short");
 
     try_malloc(h_table->huffsize, n_codes * sizeof(*h_table->huffsize));
     try_malloc(h_table->huffcode, n_codes * sizeof(*h_table->huffcode));
@@ -324,7 +325,7 @@ int handle_sof0(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) 
   jpeg_state->encoding = SOF0;
 
   // Table B.2
-  check(length < 6, "Payload is too short\n");
+  assert(length >= 6, "Payload is too short");
   uint8_t precision = payload[0];
   jpeg_state->height = read_be_16(payload + 1);
   jpeg_state->width = read_be_16(payload + 3);
@@ -334,9 +335,9 @@ int handle_sof0(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) 
   fprintf(stderr, "  precision = %d-bit\n", precision);
   fprintf(stderr, "  image dimension = (%d, %d)\n", jpeg_state->width, jpeg_state->height);
 
-  check(precision != 8, "Only 8-bit image is supported\n");
-  check((payload[5] != 1) & (payload[5] != 3), "Only 1 or 3 channels are supported");
-  check(length < 6 + jpeg_state->n_components * 3, "Payload is too short\n");
+  assert(precision == 8, "Only 8-bit image is supported");
+  assert((payload[5] == 1) | (payload[5] == 3), "Only 1 or 3 channels are supported");
+  assert(length >= 6 + jpeg_state->n_components * 3, "Payload is too short");
   try_malloc(jpeg_state->components, sizeof(Component) * jpeg_state->n_components);
   try_malloc(jpeg_state->image_buffer, jpeg_state->height * jpeg_state->width * jpeg_state->n_components);
 
@@ -355,7 +356,7 @@ int handle_sof0(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) 
 }
 
 int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, FILE *f) {
-  check(jpeg_state->encoding != SOF0, "Only Baseline JPEG is support\n");
+  assert(jpeg_state->encoding == SOF0, "Only Baseline JPEG is support");
 
   uint8_t n_components = payload[0];
   fprintf(stderr, "  n_components in scan = %d\n", n_components);
@@ -460,7 +461,7 @@ uint8_t nextbit(FILE *f) {
       uint8_t b2;
       try_fread(&b2, 1, 1, f);
       if (b2 != 0) {
-        check(b2 != DNL, "Found invalid data\n");
+        assert(b2 == DNL, "Found invalid data");
         fprintf(stderr, "DNL marker. Not implemented\n");
         return 1;
       }
@@ -510,7 +511,7 @@ int sof0_decode_block(uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int16_t *dc_coef
       uint16_t rrrr = upper_half(rs);
       uint16_t ssss = lower_half(rs);
       k += rrrr;
-      check(k >= BLOCK_SIZE * BLOCK_SIZE, "Found invalid code\n");
+      assert(k < BLOCK_SIZE * BLOCK_SIZE, "Found invalid code");
       block[k] = extend(receive(f, ssss), ssss) * q_table[k];
       k += 1;
     }
