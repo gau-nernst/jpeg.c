@@ -15,25 +15,17 @@ static PyObject *jpeg_python_decode_jpeg(PyObject *self, PyObject *args) {
     PyErr_SetString(PyExc_FileNotFoundError, filename);
     return NULL;
   }
-  JPEGState jpeg_state;
+  Image8 image;
 
-  if (decode_jpeg(f, &jpeg_state)) {
-    if (jpeg_state.components != NULL)
-      free(jpeg_state.components);
-    if (jpeg_state.image_buffer != NULL)
-      free(jpeg_state.image_buffer);
-
+  if (decode_jpeg(f, &image)) {
     PyErr_SetString(PyExc_RuntimeError, "Error while decode JPEG");
     return NULL;
   }
 
-  char *image_buffer = (char *)jpeg_state.image_buffer;
-  int image_size = jpeg_state.width * jpeg_state.height * jpeg_state.n_components;
-  free(jpeg_state.components);
-
   // TODO: set refcount somehow for image_buffer
-  PyObject *image = PyMemoryView_FromMemory(image_buffer, image_size, PyBUF_READ);
-  return image;
+  int image_size = image.width * image.height * image.n_channels;
+  PyObject *out = PyMemoryView_FromMemory((char *)image.data, image_size, PyBUF_READ);
+  return out;
 }
 
 // method table
