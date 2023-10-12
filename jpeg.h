@@ -21,6 +21,7 @@ typedef struct JPEGState {
   uint16_t width;
   uint16_t height;
   uint8_t n_components;
+  uint16_t restart_interval;
   uint16_t q_tables[4][8 * 8];
   struct HuffmanTable h_tables[2][4];
   struct Component *components;
