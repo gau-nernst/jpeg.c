@@ -2,8 +2,6 @@
 #include <stdint.h>
 #include <stdio.h>
 
-int to_ppm(const char *, uint8_t *, unsigned int, unsigned int);
-
 int main(int argc, char *argv[]) {
   if (argc == 1) {
     fprintf(stderr, "No input\n");
@@ -16,27 +14,28 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  struct JPEGState jpeg_state;
+  Image8 image = {0};
   init_dct_matrix();
-  decode_jpeg(f, &jpeg_state);
+  decode_jpeg(f, &image);
+  fclose(f);
 
-  to_ppm("output.ppm", jpeg_state.image_buffer, jpeg_state.width, jpeg_state.height);
-}
+  if (image.data == 0) {
+    fprintf(stderr, "No image\n");
+    return 1;
+  }
 
-int to_ppm(const char *filename, uint8_t *image_buffer, unsigned int width, unsigned int height) {
-  FILE *f = fopen(filename, "w");
+  char *filename = "output.ppm";
+  f = fopen(filename, "w");
   if (f == NULL) {
     fprintf(stderr, "Failed to open %s to write", filename);
     return 1;
   }
 
-  fprintf(f, "P3\n%d %d\n255\n", width, height);
-  for (int j = 0; j < height; j++)
-    for (int i = 0; i < width; i++) {
-      for (int c = 0; c < 3; c++)
-        fprintf(f, "%d ", image_buffer[(j * width + i) * 3 + c]);
+  fprintf(f, "P%d\n%d %d\n255\n", image.n_channels == 1 ? 2 : 3, image.width, image.height);
+  for (int j = 0; j < image.height; j++)
+    for (int i = 0; i < image.width; i++) {
+      for (int c = 0; c < image.n_channels; c++)
+        fprintf(f, "%d ", image.data[(j * image.width + i) * image.n_channels + c]);
       fprintf(f, "\n");
     }
-
-  return 0;
 }

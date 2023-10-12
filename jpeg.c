@@ -91,16 +91,43 @@ enum MARKER {
   COM = 0xFE,
 };
 
+typedef struct {
+  uint8_t *huffsize;
+  uint16_t *huffcode;
+  uint8_t *huffval;
+  uint16_t mincode[16];
+  int32_t maxcode[16];
+  uint8_t valptr[16];
+} HuffmanTable;
+
+typedef struct {
+  int x_sampling_factor;
+  int y_sampling_factor;
+  int q_table_id;
+} Component;
+
+typedef struct {
+  uint8_t encoding;
+  uint16_t width;
+  uint16_t height;
+  uint8_t n_components;
+  uint16_t restart_interval;
+  uint16_t q_tables[4][8 * 8];
+  HuffmanTable h_tables[2][4];
+  Component *components;
+  uint8_t *image_buffer;
+} DecoderState;
+
 static uint16_t read_be_16(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
 static uint8_t upper_half(uint8_t x) { return x >> 4; }
 static uint8_t lower_half(uint8_t x) { return x & 0xF; }
 
 static int handle_app0(const uint8_t *, uint16_t);
 static int handle_app1(const uint8_t *, uint16_t);
-static int handle_dqt(const uint8_t *, uint16_t, JPEGState *);
-static int handle_dht(const uint8_t *, uint16_t, JPEGState *);
-static int handle_sof0(const uint8_t *, uint16_t, JPEGState *);
-static int handle_sos(const uint8_t *, uint16_t, JPEGState *, FILE *);
+static int handle_dqt(const uint8_t *, uint16_t, DecoderState *);
+static int handle_dht(const uint8_t *, uint16_t, DecoderState *);
+static int handle_sof0(const uint8_t *, uint16_t, DecoderState *);
+static int handle_sos(const uint8_t *, uint16_t, DecoderState *, FILE *);
 
 int is_rst = 0;
 
@@ -125,10 +152,11 @@ const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
 // clang-format on
 double DCT_MATRIX[BLOCK_SIZE][BLOCK_SIZE];
 
-int decode_jpeg(FILE *f, JPEGState *jpeg_state) {
+int decode_jpeg(FILE *f, Image8 *image) {
   uint8_t marker[2];
   uint16_t length;
   uint8_t *payload = NULL;
+  DecoderState decoder_state;
 
   uint8_t finished = 0;
   while (finished == 0) {
@@ -169,32 +197,32 @@ int decode_jpeg(FILE *f, JPEGState *jpeg_state) {
 
     case DQT:
       fprintf(stderr, "DQT (length = %d)\n", length);
-      if (handle_dqt(payload, length, jpeg_state))
+      if (handle_dqt(payload, length, &decoder_state))
         return 1;
       break;
 
     case DHT:
       fprintf(stderr, "DHT (length = %d)\n", length);
-      if (handle_dht(payload, length, jpeg_state))
+      if (handle_dht(payload, length, &decoder_state))
         return 1;
       break;
 
     case SOF0:
       fprintf(stderr, "SOF0 (length = %d)\n", length);
-      if (handle_sof0(payload, length, jpeg_state))
+      if (handle_sof0(payload, length, &decoder_state))
         return 1;
       break;
 
     case DRI:
       fprintf(stderr, "DRI (length = %d)\n", length);
       assert(length >= 2, "Payload not long enough");
-      jpeg_state->restart_interval = read_be_16(payload);
-      fprintf(stderr, "  restart interval = %d\n", jpeg_state->restart_interval);
+      decoder_state.restart_interval = read_be_16(payload);
+      fprintf(stderr, "  restart interval = %d\n", decoder_state.restart_interval);
       break;
 
     case SOS:
       fprintf(stderr, "SOS\n");
-      if (handle_sos(payload, length, jpeg_state, f))
+      if (handle_sos(payload, length, &decoder_state, f))
         return 1;
       break;
 
@@ -212,6 +240,10 @@ int decode_jpeg(FILE *f, JPEGState *jpeg_state) {
     fprintf(stderr, "\n");
   }
 
+  image->width = decoder_state.width;
+  image->height = decoder_state.height;
+  image->n_channels = decoder_state.n_components;
+  image->data = decoder_state.image_buffer;
   return 0;
 }
 
@@ -246,7 +278,7 @@ int handle_app1(const uint8_t *payload, uint16_t length) {
 
 // ITU-T.81 B.2.4.1
 // there can be multiple quantization tables within 1 DQT segment
-int handle_dqt(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
+int handle_dqt(const uint8_t *payload, uint16_t length, DecoderState *decoder_state) {
   int offset = 0;
   while (offset < length) {
     uint8_t precision = upper_half(payload[offset]);
@@ -255,7 +287,7 @@ int handle_dqt(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
     assert(length >= offset + 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1), "Payload is too short");
 
     uint16_t *q_table;
-    q_table = jpeg_state->q_tables[identifier];
+    q_table = decoder_state->q_tables[identifier];
     if (precision) {
       for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++)
         q_table[i] = read_be_16(payload + offset + 1 + i * 2);
@@ -278,7 +310,7 @@ int handle_dqt(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
 
 // ITU-T.81 B.2.4.2
 // there can be multiple huffman tables within 1 DHT segment
-int handle_dht(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
+int handle_dht(const uint8_t *payload, uint16_t length, DecoderState *decoder_state) {
   int offset = 0;
   while (offset < length) {
     uint8_t class = upper_half(payload[offset]);
@@ -287,7 +319,7 @@ int handle_dht(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
     assert(length >= offset + 1 + MAX_HUFFMAN_CODE_LENGTH, "Payload is too short");
 
     // ITU-T.81 Annex C: create Huffman table
-    HuffmanTable *h_table = &jpeg_state->h_tables[class][identifier];
+    HuffmanTable *h_table = &decoder_state->h_tables[class][identifier];
     int n_codes = 0;
     for (int i = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++)
       n_codes += payload[offset + 1 + i];
@@ -333,29 +365,29 @@ int handle_dht(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
   return 0;
 }
 
-int handle_sof0(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) {
-  jpeg_state->encoding = SOF0;
+int handle_sof0(const uint8_t *payload, uint16_t length, DecoderState *decoder_state) {
+  decoder_state->encoding = SOF0;
 
   // Table B.2
   assert(length >= 6, "Payload is too short");
   uint8_t precision = payload[0];
-  jpeg_state->height = read_be_16(payload + 1);
-  jpeg_state->width = read_be_16(payload + 3);
-  jpeg_state->n_components = payload[5];
+  decoder_state->height = read_be_16(payload + 1);
+  decoder_state->width = read_be_16(payload + 3);
+  decoder_state->n_components = payload[5];
 
   fprintf(stderr, "  encoding = Baseline DCT\n");
   fprintf(stderr, "  precision = %d-bit\n", precision);
-  fprintf(stderr, "  image dimension = (%d, %d)\n", jpeg_state->width, jpeg_state->height);
+  fprintf(stderr, "  image dimension = (%d, %d)\n", decoder_state->width, decoder_state->height);
 
   assert(precision == 8, "Only 8-bit image is supported");
   assert((payload[5] == 1) | (payload[5] == 3), "Only 1 or 3 channels are supported");
-  assert(length >= 6 + jpeg_state->n_components * 3, "Payload is too short");
-  try_malloc(jpeg_state->components, sizeof(Component) * jpeg_state->n_components);
-  try_malloc(jpeg_state->image_buffer, jpeg_state->height * jpeg_state->width * jpeg_state->n_components);
+  assert(length >= 6 + decoder_state->n_components * 3, "Payload is too short");
+  try_malloc(decoder_state->components, sizeof(Component) * decoder_state->n_components);
+  try_malloc(decoder_state->image_buffer, decoder_state->height * decoder_state->width * decoder_state->n_components);
 
-  for (int i = 0; i < jpeg_state->n_components; i++) {
+  for (int i = 0; i < decoder_state->n_components; i++) {
     uint8_t component_id = payload[6 + i * 3]; // this should be i+1, according to JFIF
-    Component *component = &jpeg_state->components[component_id - 1];
+    Component *component = &decoder_state->components[component_id - 1];
     component->x_sampling_factor = upper_half(payload[7 + i * 3]);
     component->y_sampling_factor = lower_half(payload[7 + i * 3]);
     component->q_table_id = payload[8 + i * 3];
@@ -367,8 +399,8 @@ int handle_sof0(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state) 
   return 0;
 }
 
-int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, FILE *f) {
-  assert(jpeg_state->encoding == SOF0, "Only Baseline JPEG is support");
+int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_state, FILE *f) {
+  assert(decoder_state->encoding == SOF0, "Only Baseline JPEG is support");
 
   uint8_t n_components = payload[0];
   fprintf(stderr, "  n_components in scan = %d\n", n_components);
@@ -383,18 +415,18 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
   fprintf(stderr, "  ah = %d\n", payload[3 + n_components * 2]);
   fprintf(stderr, "  al = %d\n", payload[4 + n_components * 2]);
 
-  int n_x_blocks = ceil_div(jpeg_state->width, BLOCK_SIZE);
-  int n_y_blocks = ceil_div(jpeg_state->height, BLOCK_SIZE);
+  int n_x_blocks = ceil_div(decoder_state->width, BLOCK_SIZE);
+  int n_y_blocks = ceil_div(decoder_state->height, BLOCK_SIZE);
 
   // A.2.2
   if (n_components == 1) {
     // fprintf(stderr, "Decode 1-component scan is not implemented\n");
     // ignore sampling factor
     int channel_id = payload[1] - 1;
-    Component *component = &jpeg_state->components[channel_id];
-    HuffmanTable *dc_h_table = &jpeg_state->h_tables[0][upper_half(payload[2])];
-    HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][lower_half(payload[2])];
-    uint16_t *q_table = jpeg_state->q_tables[component->q_table_id];
+    Component *component = &decoder_state->components[channel_id];
+    HuffmanTable *dc_h_table = &decoder_state->h_tables[0][upper_half(payload[2])];
+    HuffmanTable *ac_h_table = &decoder_state->h_tables[1][lower_half(payload[2])];
+    uint16_t *q_table = decoder_state->q_tables[component->q_table_id];
     int dc_coef = 0;
 
     for (int y = 0; y < n_y_blocks; y++)
@@ -410,15 +442,16 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
         // place to image buffer
         for (int j = 0; j < BLOCK_SIZE; j++) {
           int row_idx = y * BLOCK_SIZE + j;
-          if (row_idx >= jpeg_state->height)
+          if (row_idx >= decoder_state->height)
             break;
 
           for (int i = 0; i < BLOCK_SIZE; i++) {
             int col_idx = x * BLOCK_SIZE + i;
-            if (col_idx >= jpeg_state->width)
+            if (col_idx >= decoder_state->width)
               break;
 
-            jpeg_state->image_buffer[(row_idx * jpeg_state->width + col_idx) * jpeg_state->n_components + channel_id] =
+            decoder_state
+                ->image_buffer[(row_idx * decoder_state->width + col_idx) * decoder_state->n_components + channel_id] =
                 block_u8[j][i];
           }
         }
@@ -429,8 +462,8 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
   // A.2.3
   // calculate number of MCUs based on chroma-subsampling
   int max_x_sampling = 0, max_y_sampling = 0;
-  for (int i = 0; i < jpeg_state->n_components; i++) {
-    Component *component = jpeg_state->components + i;
+  for (int i = 0; i < decoder_state->n_components; i++) {
+    Component *component = decoder_state->components + i;
     max_x_sampling = max(max_x_sampling, component->x_sampling_factor);
     max_y_sampling = max(max_y_sampling, component->y_sampling_factor);
   }
@@ -447,10 +480,10 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
     for (int mcu_x = 0; mcu_x < n_x_blocks / max_x_sampling; mcu_x++) {
       for (int c = 0; c < n_components; c++) {
         int channel_id = payload[1 + c * 2] - 1;
-        Component *component = &jpeg_state->components[channel_id];
-        HuffmanTable *dc_h_table = &jpeg_state->h_tables[0][upper_half(payload[2 + c * 2])];
-        HuffmanTable *ac_h_table = &jpeg_state->h_tables[1][lower_half(payload[2 + c * 2])];
-        uint16_t *q_table = jpeg_state->q_tables[component->q_table_id];
+        Component *component = &decoder_state->components[channel_id];
+        HuffmanTable *dc_h_table = &decoder_state->h_tables[0][upper_half(payload[2 + c * 2])];
+        HuffmanTable *ac_h_table = &decoder_state->h_tables[1][lower_half(payload[2 + c * 2])];
+        uint16_t *q_table = decoder_state->q_tables[component->q_table_id];
 
         for (int y = 0; y < component->y_sampling_factor; y++)
           for (int x = 0; x < component->x_sampling_factor; x++) {
@@ -473,18 +506,19 @@ int handle_sos(const uint8_t *payload, uint16_t length, JPEGState *jpeg_state, F
 
       for (int j = 0; j < mcu_height; j++) {
         int row_idx = mcu_y * mcu_height + j;
-        if (row_idx >= jpeg_state->height)
+        if (row_idx >= decoder_state->height)
           break;
 
         for (int i = 0; i < mcu_width; i++) {
           int col_idx = mcu_x * mcu_width + i;
-          if (col_idx >= jpeg_state->width)
+          if (col_idx >= decoder_state->width)
             break;
 
           ycbcr_to_rgb_(mcu + (j * mcu_width + i) * n_components);
           for (int c = 0; c < n_components; c++) {
             int channel_id = payload[1 + c * 2] - 1;
-            jpeg_state->image_buffer[(row_idx * jpeg_state->width + col_idx) * jpeg_state->n_components + channel_id] =
+            decoder_state
+                ->image_buffer[(row_idx * decoder_state->width + col_idx) * decoder_state->n_components + channel_id] =
                 mcu[(j * mcu_width + i) * n_components + c];
           }
         }
