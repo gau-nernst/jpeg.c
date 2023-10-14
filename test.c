@@ -16,8 +16,7 @@ int main(int argc, char *argv[]) {
 
   Image8 image = {0};
   init_dct_matrix();
-  if (decode_jpeg(f, &image))
-    return 1;
+  int decode_result = decode_jpeg(f, &image);
   fclose(f);
 
   if (image.data == 0) {
@@ -39,4 +38,6 @@ int main(int argc, char *argv[]) {
         fprintf(f, "%d ", image.data[(j * image.width + i) * image.n_channels + c]);
       fprintf(f, "\n");
     }
+
+  return decode_result;
 }
