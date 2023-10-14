@@ -4,7 +4,7 @@ $(images):
 	wget "https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/$@" -q
 
 test: jpeg.c test.c $(images)
-	cc $^ -o test -lm
+	cc jpeg.c test.c -o test -lm
 	./test jpeg420exif.jpg
 	./test jpeg422jfif.jpg
 	./test jpeg400jfif.jpg
