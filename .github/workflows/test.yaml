@@ -17,10 +17,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v3
-      - run: make test_jpeg420exif.jpg
-      - run: make test_jpeg422jfif.jpg
-      - run: make test_jpeg400jfif.jpg
-      - run: make test_jpeg444.jpg
+      - run: make test
       - uses: actions/setup-python@v4
         with:
           python-version: '3.7'

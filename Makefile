@@ -3,13 +3,12 @@ images = jpeg420exif.jpg jpeg422jfif.jpg jpeg400jfif.jpg jpeg444.jpg
 $(images):
 	wget "https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/$@" -q
 
-test: jpeg.c test.c
+test: jpeg.c test.c $(images)
 	cc $^ -o test -lm
-
-test_%.jpg: %.jpg test
-	./test $<
-
-test_all: $(addprefix test_,$(images))
+	./test jpeg420exif.jpg
+	./test jpeg422jfif.jpg
+	./test jpeg400jfif.jpg
+	./test jpeg444.jpg
 
 python:
 	python jpeg_python/setup.py build_ext -i
