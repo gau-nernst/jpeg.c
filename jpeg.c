@@ -600,7 +600,7 @@ int sof0_decode_data_unit(uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE], int 
       int rrrr = upper_half(rs);
       int ssss = lower_half(rs);
       k += rrrr;
-      assert(k < DATA_UNIT_SIZE * DATA_UNIT_SIZE, "Found invalid code");
+      assert(k < DATA_UNIT_SIZE * DATA_UNIT_SIZE, "Encounter invalid code");
       check(receive(f, ssss, &value));
       block[k] = extend(value, ssss) * q_table[k];
       k += 1;
@@ -629,6 +629,7 @@ void init_dct_matrix() {
       DCT_MATRIX[i][j] = i == 0 ? 0.5 * M_SQRT1_2 : 0.5 * cos((j + 0.5) * i * M_PI / DATA_UNIT_SIZE);
 }
 
+// TODO: benchmark. use single-precision instead of double-precision?
 void idct_1d(double *x, double *out, size_t offset, size_t stride) {
   for (int i = 0; i < DATA_UNIT_SIZE; i++) {
     double result = 0;
