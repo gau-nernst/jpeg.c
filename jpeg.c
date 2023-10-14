@@ -403,11 +403,11 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
 
   uint8_t n_components = payload[0];
   fprintf(stderr, "  n_components in scan = %d\n", n_components);
-  assert(n_components <= image->n_channels, "Scan contains more channels than declared")
+  assert(n_components <= image->n_channels, "Scan contains more channels than declared");
 
-      for (int i = 0; i < n_components; i++)
-          fprintf(stderr, "  component %d: DC coding table = %d  AC coding table = %d\n", payload[1 + i * 2],
-                  upper_half(payload[2 + i * 2]), lower_half(payload[2 + i * 2]));
+  for (int i = 0; i < n_components; i++)
+    fprintf(stderr, "  component %d: DC coding table = %d  AC coding table = %d\n", payload[1 + i * 2],
+            upper_half(payload[2 + i * 2]), lower_half(payload[2 + i * 2]));
 
   // not used by Baseline DCT
   fprintf(stderr, "  ss = %d\n", payload[1 + n_components * 2]);
@@ -415,12 +415,8 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
   fprintf(stderr, "  ah = %d\n", payload[3 + n_components * 2]);
   fprintf(stderr, "  al = %d\n", payload[4 + n_components * 2]);
 
-  int n_x_blocks = ceil_div(image->width, DATA_UNIT_SIZE);
-  int n_y_blocks = ceil_div(image->height, DATA_UNIT_SIZE);
-
-  // A.2.2
   if (n_components == 1) {
-    // fprintf(stderr, "Decode 1-component scan is not implemented\n");
+    // Non-interleaved order. A.2.2
     // ignore sampling factor
     int channel_id = payload[1] - 1;
     Component *component = &decoder_state->components[channel_id];
@@ -429,8 +425,11 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
     uint16_t *q_table = decoder_state->q_tables[component->q_table_id];
     int dc_coef = 0;
 
-    for (int y = 0; y < n_y_blocks; y++)
-      for (int x = 0; x < n_x_blocks; x++) {
+    int nx_blocks = ceil_div(image->width, DATA_UNIT_SIZE);
+    int ny_blocks = ceil_div(image->height, DATA_UNIT_SIZE);
+
+    for (int y = 0; y < ny_blocks; y++)
+      for (int x = 0; x < nx_blocks; x++) {
         uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
         // E.2.4
         check(sof0_decode_data_unit(block_u8, &dc_coef, f, dc_h_table, ac_h_table, q_table));
@@ -440,16 +439,10 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
         }
 
         // place to image buffer
-        for (int j = 0; j < DATA_UNIT_SIZE; j++) {
+        for (int j = 0; j < min(DATA_UNIT_SIZE, image->height - y * DATA_UNIT_SIZE); j++) {
           int row_idx = y * DATA_UNIT_SIZE + j;
-          if (row_idx >= image->height)
-            break;
-
-          for (int i = 0; i < DATA_UNIT_SIZE; i++) {
+          for (int i = 0; i < min(DATA_UNIT_SIZE, image->width - x * DATA_UNIT_SIZE); i++) {
             int col_idx = x * DATA_UNIT_SIZE + i;
-            if (col_idx >= image->width)
-              break;
-
             image->data[(row_idx * image->width + col_idx) * image->n_channels + channel_id] = block_u8[j][i];
           }
         }
@@ -457,28 +450,27 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
     return 0;
   }
 
-  // A.2.3
+  // Interleaved order. A.2.3
   // calculate number of MCUs based on chroma-subsampling
   int max_x_sampling = 0, max_y_sampling = 0;
-  for (int i = 0; i < image->n_channels; i++) {
-    Component *component = decoder_state->components + i;
+  for (int i = 0; i < n_components; i++) {
+    Component *component = &decoder_state->components[payload[1 + i * 2] - 1];
     max_x_sampling = max(max_x_sampling, component->x_sampling_factor);
     max_y_sampling = max(max_y_sampling, component->y_sampling_factor);
   }
   int mcu_width = DATA_UNIT_SIZE * max_x_sampling;
   int mcu_height = DATA_UNIT_SIZE * max_y_sampling;
+  int nx_mcu = ceil_div(image->width, mcu_width);
+  int ny_mcu = ceil_div(image->height, mcu_height);
 
   int dc_coefs[3] = {0};
   uint8_t *mcu;
   try_malloc(mcu, mcu_width * mcu_height * n_components);
 
-  // refer to T.81 Table A.2 for MCU packing order
-  // A.2.3
-  for (int mcu_y = 0; mcu_y < n_y_blocks / max_y_sampling; mcu_y++)
-    for (int mcu_x = 0; mcu_x < n_x_blocks / max_x_sampling; mcu_x++) {
+  for (int mcu_y = 0; mcu_y < ny_mcu; mcu_y++)
+    for (int mcu_x = 0; mcu_x < nx_mcu; mcu_x++) {
       for (int c = 0; c < n_components; c++) {
-        int channel_id = payload[1 + c * 2] - 1;
-        Component *component = &decoder_state->components[channel_id];
+        Component *component = &decoder_state->components[payload[1 + c * 2] - 1];
         HuffmanTable *dc_h_table = &decoder_state->h_tables[0][upper_half(payload[2 + c * 2])];
         HuffmanTable *ac_h_table = &decoder_state->h_tables[1][lower_half(payload[2 + c * 2])];
         uint16_t *q_table = decoder_state->q_tables[component->q_table_id];
@@ -488,8 +480,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
             uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
             check(sof0_decode_data_unit(block_u8, dc_coefs + c, f, dc_h_table, ac_h_table, q_table));
 
-            // place to mcu. A.2.3
-            // JFIF p.4
+            // place to mcu. A.2.3 and JFIF p.4
             int n_repeat_y = max_y_sampling / component->y_sampling_factor;
             int n_repeat_x = max_x_sampling / component->x_sampling_factor;
             for (int j = 0; j < DATA_UNIT_SIZE * n_repeat_y; j++) {
@@ -502,16 +493,10 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
           }
       }
 
-      for (int j = 0; j < mcu_height; j++) {
+      for (int j = 0; j < min(mcu_height, image->height - mcu_y * mcu_height); j++) {
         int row_idx = mcu_y * mcu_height + j;
-        if (row_idx >= image->height)
-          break;
-
-        for (int i = 0; i < mcu_width; i++) {
+        for (int i = 0; i < min(mcu_width, image->width - mcu_x * mcu_width); i++) {
           int col_idx = mcu_x * mcu_width + i;
-          if (col_idx >= image->width)
-            break;
-
           ycbcr_to_rgb_(mcu + (j * mcu_width + i) * n_components);
           for (int c = 0; c < n_components; c++) {
             int channel_id = payload[1 + c * 2] - 1;
@@ -664,9 +649,9 @@ void idct_2d_(double *x) {
 // JFIF p.3
 void ycbcr_to_rgb_(uint8_t *x) {
   // clang-format off
-  double r = x[0]                          + 1.402   * (x[2] - 128);
-  double g = x[0] - 0.34414 * (x[1] - 128) - 0.71414 * (x[2] - 128);
-  double b = x[0] + 1.772   * (x[1] - 128);
+  float r = x[0]                           + 1.402f   * (x[2] - 128);
+  float g = x[0] - 0.34414f * (x[1] - 128) - 0.71414f * (x[2] - 128);
+  float b = x[0] + 1.772f   * (x[1] - 128);
   // clang-format on
   x[0] = clip(round(r), 0, 255);
   x[1] = clip(round(g), 0, 255);
