@@ -112,6 +112,9 @@ typedef struct {
   uint16_t q_tables[4][8 * 8];
   HuffmanTable h_tables[2][4];
   Component *components;
+
+  int dc_preds[3];
+  int is_restart;
   Image8 *image;
 } DecoderState;
 
@@ -126,10 +129,7 @@ static int handle_dht(const uint8_t *, uint16_t, DecoderState *);
 static int handle_sof0(const uint8_t *, uint16_t, DecoderState *);
 static int handle_sos(const uint8_t *, uint16_t, DecoderState *, FILE *);
 
-int is_rst = 0;
-
-static int sof0_decode_data_unit(uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE], int *dc_coef, FILE *f,
-                                 HuffmanTable *dc_h_table, HuffmanTable *ac_h_table, uint16_t *q_table);
+static int sof0_decode_data_unit(FILE *, uint8_t[DATA_UNIT_SIZE][DATA_UNIT_SIZE], DecoderState *, int, int, int);
 
 static void idct_2d_(double *);
 static void ycbcr_to_rgb_(uint8_t *);
@@ -418,12 +418,12 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
   if (n_components == 1) {
     // Non-interleaved order. A.2.2
     // ignore sampling factor
-    int channel_id = payload[1] - 1;
-    Component *component = &decoder_state->components[channel_id];
-    HuffmanTable *dc_h_table = &decoder_state->h_tables[0][upper_half(payload[2])];
-    HuffmanTable *ac_h_table = &decoder_state->h_tables[1][lower_half(payload[2])];
-    uint16_t *q_table = decoder_state->q_tables[component->q_table_id];
-    int dc_coef = 0;
+    int component_id = payload[1] - 1;
+    int dc_table_id = upper_half(payload[2]);
+    int ac_table_id = lower_half(payload[2]);
+    Component *component = &decoder_state->components[component_id];
+
+    decoder_state->dc_preds[0] = 0;
 
     int nx_blocks = ceil_div(image->width, DATA_UNIT_SIZE);
     int ny_blocks = ceil_div(image->height, DATA_UNIT_SIZE);
@@ -431,19 +431,14 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
     for (int y = 0; y < ny_blocks; y++)
       for (int x = 0; x < nx_blocks; x++) {
         uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
-        // E.2.4
-        check(sof0_decode_data_unit(block_u8, &dc_coef, f, dc_h_table, ac_h_table, q_table));
-        if (is_rst) {
-          dc_coef = 0;
-          is_rst = 0;
-        }
+        check(sof0_decode_data_unit(f, block_u8, decoder_state, dc_table_id, ac_table_id, component_id));
 
         // place to image buffer
         for (int j = 0; j < min(DATA_UNIT_SIZE, image->height - y * DATA_UNIT_SIZE); j++) {
           int row_idx = y * DATA_UNIT_SIZE + j;
           for (int i = 0; i < min(DATA_UNIT_SIZE, image->width - x * DATA_UNIT_SIZE); i++) {
             int col_idx = x * DATA_UNIT_SIZE + i;
-            image->data[(row_idx * image->width + col_idx) * image->n_channels + channel_id] = block_u8[j][i];
+            image->data[(row_idx * image->width + col_idx) * image->n_channels + component_id] = block_u8[j][i];
           }
         }
       }
@@ -463,22 +458,23 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
   int nx_mcu = ceil_div(image->width, mcu_width);
   int ny_mcu = ceil_div(image->height, mcu_height);
 
-  int dc_coefs[3] = {0};
+  for (int i = 0; i < 3; i++)
+    decoder_state->dc_preds[i] = 0;
   uint8_t *mcu;
   try_malloc(mcu, mcu_width * mcu_height * n_components);
 
   for (int mcu_y = 0; mcu_y < ny_mcu; mcu_y++)
     for (int mcu_x = 0; mcu_x < nx_mcu; mcu_x++) {
       for (int c = 0; c < n_components; c++) {
-        Component *component = &decoder_state->components[payload[1 + c * 2] - 1];
-        HuffmanTable *dc_h_table = &decoder_state->h_tables[0][upper_half(payload[2 + c * 2])];
-        HuffmanTable *ac_h_table = &decoder_state->h_tables[1][lower_half(payload[2 + c * 2])];
-        uint16_t *q_table = decoder_state->q_tables[component->q_table_id];
+        int component_id = payload[1 + c * 2] - 1;
+        int dc_table_id = upper_half(payload[2 + c * 2]);
+        int ac_table_id = lower_half(payload[2 + c * 2]);
+        Component *component = &decoder_state->components[component_id];
 
         for (int y = 0; y < component->y_sampling_factor; y++)
           for (int x = 0; x < component->x_sampling_factor; x++) {
             uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
-            check(sof0_decode_data_unit(block_u8, dc_coefs + c, f, dc_h_table, ac_h_table, q_table));
+            check(sof0_decode_data_unit(f, block_u8, decoder_state, dc_table_id, ac_table_id, component_id));
 
             // place to mcu. A.2.3 and JFIF p.4
             int n_repeat_y = max_y_sampling / component->y_sampling_factor;
@@ -572,8 +568,12 @@ int decode(FILE *f, HuffmanTable *h_table, uint16_t *out) {
   return 0;
 }
 
-int sof0_decode_data_unit(uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE], int *dc_coef, FILE *f,
-                          HuffmanTable *dc_h_table, HuffmanTable *ac_h_table, uint16_t *q_table) {
+int sof0_decode_data_unit(FILE *f, uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE], DecoderState *decoder_state,
+                          int dc_table_id, int ac_table_id, int component_id) {
+  HuffmanTable *dc_table = &decoder_state->h_tables[0][dc_table_id];
+  HuffmanTable *ac_table = &decoder_state->h_tables[1][ac_table_id];
+  uint16_t *q_table = decoder_state->q_tables[decoder_state->components[component_id].q_table_id];
+
   // NOTE: block can be negative
   // NOTE: dequantized value can be out-of-range
   int32_t block[DATA_UNIT_SIZE * DATA_UNIT_SIZE] = {0};
@@ -581,17 +581,17 @@ int sof0_decode_data_unit(uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE], int 
 
   // decode DC: F.2.2.1
   uint16_t n_bits, value;
-  check(decode(f, dc_h_table, &n_bits));
+  check(decode(f, dc_table, &n_bits));
   check(receive(f, n_bits, &value));
   int32_t diff = extend(value, n_bits);
 
-  dc_coef[0] += diff;
-  block[0] = dc_coef[0] * q_table[0];
+  decoder_state->dc_preds[component_id] += diff;
+  block[0] = decoder_state->dc_preds[component_id] * q_table[0];
 
   // decode AC: F.2.2.2
   for (int k = 1; k < DATA_UNIT_SIZE * DATA_UNIT_SIZE;) {
     uint16_t rs;
-    check(decode(f, ac_h_table, &rs));
+    check(decode(f, ac_table, &rs));
     if (rs == ZRL)
       k += 16;
     else if (rs == EOB)
