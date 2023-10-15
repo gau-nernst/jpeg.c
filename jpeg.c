@@ -235,7 +235,6 @@ int decode_jpeg(FILE *f, Image8 *image) {
     fprintf(stderr, "\n");
   }
 
-  // TODO: free decoder_state
   return 0;
 }
 
@@ -448,6 +447,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
 
   // Interleaved order. A.2.3
   // calculate number of MCUs based on chroma-subsampling
+  // TODO: handle restart markers for 3-channel
   int mcu_width = DATA_UNIT_SIZE * decoder_state->max_x_sampling;
   int mcu_height = DATA_UNIT_SIZE * decoder_state->max_y_sampling;
   int nx_mcu = ceil_div(image->width, mcu_width);
@@ -473,6 +473,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
             check(sof0_decode_data_unit(f, block_u8, decoder_state, dc_table_id, ac_table_id, component_id));
 
             // place to mcu. A.2.3 and JFIF p.4
+            // NOTE: assume order in the scan is YCbCr
             int n_repeat_y = decoder_state->max_y_sampling / component->y_sampling;
             int n_repeat_x = decoder_state->max_x_sampling / component->x_sampling;
             for (int j = 0; j < DATA_UNIT_SIZE * n_repeat_y; j++) {
