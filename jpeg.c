@@ -417,31 +417,45 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
 
   if (n_components == 1) {
     // Non-interleaved order. A.2.2
-    // ignore sampling factor
     int component_id = payload[1] - 1;
     int dc_table_id = upper_half(payload[2]);
     int ac_table_id = lower_half(payload[2]);
     Component *component = &decoder_state->components[component_id];
 
     decoder_state->dc_preds[0] = 0;
+    decoder_state->is_restart = 0;
 
+    // TODO: take into account sampling factor
     int nx_blocks = ceil_div(image->width, DATA_UNIT_SIZE);
     int ny_blocks = ceil_div(image->height, DATA_UNIT_SIZE);
+    fprintf(stderr, "%d %d\n", nx_blocks, ny_blocks);
 
-    for (int y = 0; y < ny_blocks; y++)
-      for (int x = 0; x < nx_blocks; x++) {
-        uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
-        check(sof0_decode_data_unit(f, block_u8, decoder_state, dc_table_id, ac_table_id, component_id));
+    for (int mcu_idx = 0; mcu_idx < ny_blocks * nx_blocks;) {
+      uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
+      check(sof0_decode_data_unit(f, block_u8, decoder_state, dc_table_id, ac_table_id, component_id));
 
-        // place to image buffer
-        for (int j = 0; j < min(DATA_UNIT_SIZE, image->height - y * DATA_UNIT_SIZE); j++) {
-          int row_idx = y * DATA_UNIT_SIZE + j;
-          for (int i = 0; i < min(DATA_UNIT_SIZE, image->width - x * DATA_UNIT_SIZE); i++) {
-            int col_idx = x * DATA_UNIT_SIZE + i;
-            image->data[(row_idx * image->width + col_idx) * image->n_channels + component_id] = block_u8[j][i];
-          }
+      // E.2.4
+      // When restart marker is received, ignore current MCU. Reset decoder state and move on to the next MCU
+      // NOTE: we don't check for consecutive restart markers
+      if (decoder_state->is_restart) {
+        decoder_state->dc_preds[0] = 0;
+        mcu_idx = ceil_div(mcu_idx, decoder_state->restart_interval) * decoder_state->restart_interval;
+        decoder_state->is_restart = 0;
+        continue;
+      }
+
+      // place mcu to image buffer
+      int y = mcu_idx / nx_blocks;
+      int x = mcu_idx % nx_blocks;
+      for (int j = 0; j < min(DATA_UNIT_SIZE, image->height - y * DATA_UNIT_SIZE); j++) {
+        int row_idx = y * DATA_UNIT_SIZE + j;
+        for (int i = 0; i < min(DATA_UNIT_SIZE, image->width - x * DATA_UNIT_SIZE); i++) {
+          int col_idx = x * DATA_UNIT_SIZE + i;
+          image->data[(row_idx * image->width + col_idx) * image->n_channels + component_id] = block_u8[j][i];
         }
       }
+      mcu_idx++;
+    }
     return 0;
   }
 
@@ -511,7 +525,7 @@ int32_t extend(uint16_t value, uint16_t n_bits) {
 }
 
 // Figure F.18
-int nextbit(FILE *f, uint16_t *out) {
+int nextbit(FILE *f, uint16_t *out, DecoderState *decoder_state) {
   // impure function
   static uint8_t b, cnt = 0;
 
@@ -525,10 +539,10 @@ int nextbit(FILE *f, uint16_t *out) {
       try_fread(&b2, 1, 1, f);
       if (b2 != 0) {
         if ((RST0 <= b2) & (b2 < RST0 + 8)) {
-          fprintf(stderr, "Encounter RST marker %d\n", b2 - RST0);
+          fprintf(stderr, "Encounter RST%d marker\n", b2 - RST0);
           cnt = 0;
-          is_rst = 1;
-          continue;
+          decoder_state->is_restart = 1;
+          return 0;
         } else if (b2 == DNL) {
           fprintf(stderr, "DNL marker. Not implemented\n");
           return 1;
@@ -544,10 +558,12 @@ int nextbit(FILE *f, uint16_t *out) {
 }
 
 // Figure F.17
-int receive(FILE *f, uint16_t ssss, uint16_t *out) {
+int receive(FILE *f, uint16_t ssss, uint16_t *out, DecoderState *decoder_state) {
   uint16_t v = 0, temp;
   for (int i = 0; i < ssss; i++) {
-    check(nextbit(f, &temp));
+    check(nextbit(f, &temp, decoder_state));
+    if (decoder_state->is_restart)
+      return 0;
     v = (v << 1) + temp;
   }
   *out = v;
@@ -555,13 +571,17 @@ int receive(FILE *f, uint16_t ssss, uint16_t *out) {
 }
 
 // Figure F.16
-int decode(FILE *f, HuffmanTable *h_table, uint16_t *out) {
+int decode(FILE *f, HuffmanTable *h_table, uint16_t *out, DecoderState *decoder_state) {
   int i = -1;
   uint16_t code, temp;
-  check(nextbit(f, &code));
+  check(nextbit(f, &code, decoder_state));
+  if (decoder_state->is_restart)
+    return 0;
 
   while (code > h_table->maxcode[++i]) {
-    check(nextbit(f, &temp));
+    check(nextbit(f, &temp, decoder_state));
+    if (decoder_state->is_restart)
+      return 0;
     code = (code << 1) + temp;
   }
   *out = h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
@@ -581,8 +601,12 @@ int sof0_decode_data_unit(FILE *f, uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SI
 
   // decode DC: F.2.2.1
   uint16_t n_bits, value;
-  check(decode(f, dc_table, &n_bits));
-  check(receive(f, n_bits, &value));
+  check(decode(f, dc_table, &n_bits, decoder_state));
+  if (decoder_state->is_restart)
+    return 0;
+  check(receive(f, n_bits, &value, decoder_state));
+  if (decoder_state->is_restart)
+    return 0;
   int32_t diff = extend(value, n_bits);
 
   decoder_state->dc_preds[component_id] += diff;
@@ -591,7 +615,9 @@ int sof0_decode_data_unit(FILE *f, uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SI
   // decode AC: F.2.2.2
   for (int k = 1; k < DATA_UNIT_SIZE * DATA_UNIT_SIZE;) {
     uint16_t rs;
-    check(decode(f, ac_table, &rs));
+    check(decode(f, ac_table, &rs, decoder_state));
+    if (decoder_state->is_restart)
+      return 0;
     if (rs == ZRL)
       k += 16;
     else if (rs == EOB)
@@ -601,7 +627,9 @@ int sof0_decode_data_unit(FILE *f, uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SI
       int ssss = lower_half(rs);
       k += rrrr;
       assert(k < DATA_UNIT_SIZE * DATA_UNIT_SIZE, "Encounter invalid code");
-      check(receive(f, ssss, &value));
+      check(receive(f, ssss, &value, decoder_state));
+      if (decoder_state->is_restart)
+        return 0;
       block[k] = extend(value, ssss) * q_table[k];
       k += 1;
     }
