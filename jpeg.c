@@ -439,8 +439,8 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
       // NOTE: we don't check for consecutive restart markers
       if (decoder_state->is_restart) {
         decoder_state->dc_preds[0] = 0;
-        mcu_idx = ceil_div(mcu_idx, decoder_state->restart_interval) * decoder_state->restart_interval;
         decoder_state->is_restart = 0;
+        mcu_idx = ceil_div(mcu_idx, decoder_state->restart_interval) * decoder_state->restart_interval;
         continue;
       }
 
@@ -474,6 +474,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
 
   for (int i = 0; i < 3; i++)
     decoder_state->dc_preds[i] = 0;
+  decoder_state->is_restart = 0;
   uint8_t *mcu;
   try_malloc(mcu, mcu_width * mcu_height * n_components);
 
