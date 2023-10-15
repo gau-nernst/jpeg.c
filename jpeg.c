@@ -9,7 +9,7 @@
 
 #define DATA_UNIT_SIZE 8
 #define MAX_HUFFMAN_CODE_LENGTH 16
-#define MAX_COMPONENTS 256
+#define MAX_COMPONENTS 4
 
 #define assert(condition, msg)                                                                                         \
   if (!(condition)) {                                                                                                  \
