@@ -1,6 +1,8 @@
 #include "jpeg.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 typedef struct {
   uint16_t tag;
@@ -73,7 +75,11 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  char *filename = "output.tiff";
+  size_t input_length = strlen(argv[1]);
+  char *filename = malloc(input_length + 6);
+  strcpy(filename, argv[1]);
+  strcat(filename, ".tiff");
+
   f = fopen(filename, "w");
   if (f == NULL) {
     fprintf(stderr, "Failed to open %s to write", filename);
