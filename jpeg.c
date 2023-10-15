@@ -9,6 +9,7 @@
 
 #define DATA_UNIT_SIZE 8
 #define MAX_HUFFMAN_CODE_LENGTH 16
+#define MAX_COMPONENTS 256
 
 #define assert(condition, msg)                                                                                         \
   if (!(condition)) {                                                                                                  \
@@ -99,19 +100,20 @@ typedef struct {
 } HuffmanTable;
 
 typedef struct {
-  int x_sampling_factor;
-  int y_sampling_factor;
+  int x_sampling;
+  int y_sampling;
   int q_table_id;
 } Component;
 
 typedef struct {
   uint8_t encoding;
   uint16_t restart_interval;
-  uint16_t q_tables[4][8 * 8];
+  uint16_t q_tables[4][DATA_UNIT_SIZE * DATA_UNIT_SIZE];
   HuffmanTable h_tables[2][4];
-  Component *components;
-
-  int dc_preds[3];
+  Component components[MAX_COMPONENTS];
+  int max_x_sampling;
+  int max_y_sampling;
+  int dc_preds[MAX_COMPONENTS];
   int is_restart;
   Image8 *image;
 } DecoderState;
@@ -255,7 +257,6 @@ int handle_app0(const uint8_t *payload, uint16_t length) {
   return 0;
 }
 
-
 // ITU-T.81 B.2.4.1
 // there can be multiple quantization tables within 1 DQT segment
 int handle_dqt(const uint8_t *payload, uint16_t length, DecoderState *decoder_state) {
@@ -266,8 +267,7 @@ int handle_dqt(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
     fprintf(stderr, "  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
     assert(length >= offset + 1 + DATA_UNIT_SIZE * DATA_UNIT_SIZE * (precision + 1), "Payload is too short");
 
-    uint16_t *q_table;
-    q_table = decoder_state->q_tables[identifier];
+    uint16_t *q_table = decoder_state->q_tables[identifier];
     if (precision) {
       for (int i = 0; i < DATA_UNIT_SIZE * DATA_UNIT_SIZE; i++)
         q_table[i] = read_be_16(payload + offset + 1 + i * 2);
@@ -364,19 +364,22 @@ int handle_sof0(const uint8_t *payload, uint16_t length, DecoderState *decoder_s
   assert(precision == 8, "Only 8-bit image is supported");
   assert((payload[5] == 1) | (payload[5] == 3), "Only 1 or 3 channels are supported");
   assert(length >= 6 + image->n_channels * 3, "Payload is too short");
-  try_malloc(decoder_state->components, sizeof(Component) * image->n_channels);
   try_malloc(image->data, image->height * image->width * image->n_channels);
 
+  decoder_state->max_x_sampling = 0;
+  decoder_state->max_y_sampling = 0;
   for (int i = 0; i < image->n_channels; i++) {
     uint8_t component_id = payload[6 + i * 3];
-    assert(component_id <= image->n_channels, "Receive invalid component id"); // according to JFIF
-    Component *component = &decoder_state->components[component_id - 1];
-    component->x_sampling_factor = upper_half(payload[7 + i * 3]);
-    component->y_sampling_factor = lower_half(payload[7 + i * 3]);
+    Component *component = &decoder_state->components[component_id];
+    component->x_sampling = upper_half(payload[7 + i * 3]);
+    component->y_sampling = lower_half(payload[7 + i * 3]);
     component->q_table_id = payload[8 + i * 3];
 
+    decoder_state->max_x_sampling = max(decoder_state->max_x_sampling, component->x_sampling);
+    decoder_state->max_y_sampling = max(decoder_state->max_y_sampling, component->y_sampling);
+
     fprintf(stderr, "  component %d: sampling_factor = (%d, %d)  q_table_id = %d\n", component_id,
-            component->x_sampling_factor, component->y_sampling_factor, component->q_table_id);
+            component->x_sampling, component->y_sampling, component->q_table_id);
   }
 
   return 0;
@@ -402,11 +405,11 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
 
   if (n_components == 1) {
     // Non-interleaved order. A.2.2
-    int component_id = payload[1] - 1;
+    int component_id = payload[1];
     int dc_table_id = upper_half(payload[2]);
     int ac_table_id = lower_half(payload[2]);
 
-    decoder_state->dc_preds[0] = 0;
+    decoder_state->dc_preds[component_id] = 0;
     decoder_state->is_restart = 0;
 
     // TODO: take into account sampling factor
@@ -422,7 +425,7 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
       // When restart marker is received, ignore current MCU. Reset decoder state and move on to the next MCU
       // NOTE: we don't check for consecutive restart markers
       if (decoder_state->is_restart) {
-        decoder_state->dc_preds[0] = 0;
+        decoder_state->dc_preds[component_id] = 0;
         decoder_state->is_restart = 0;
         mcu_idx = ceil_div(mcu_idx, decoder_state->restart_interval) * decoder_state->restart_interval;
         continue;
@@ -445,18 +448,12 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
 
   // Interleaved order. A.2.3
   // calculate number of MCUs based on chroma-subsampling
-  int max_x_sampling = 0, max_y_sampling = 0;
-  for (int i = 0; i < n_components; i++) {
-    Component *component = &decoder_state->components[payload[1 + i * 2] - 1];
-    max_x_sampling = max(max_x_sampling, component->x_sampling_factor);
-    max_y_sampling = max(max_y_sampling, component->y_sampling_factor);
-  }
-  int mcu_width = DATA_UNIT_SIZE * max_x_sampling;
-  int mcu_height = DATA_UNIT_SIZE * max_y_sampling;
+  int mcu_width = DATA_UNIT_SIZE * decoder_state->max_x_sampling;
+  int mcu_height = DATA_UNIT_SIZE * decoder_state->max_y_sampling;
   int nx_mcu = ceil_div(image->width, mcu_width);
   int ny_mcu = ceil_div(image->height, mcu_height);
 
-  for (int i = 0; i < 3; i++)
+  for (int i = 0; i < MAX_COMPONENTS; i++)
     decoder_state->dc_preds[i] = 0;
   decoder_state->is_restart = 0;
   uint8_t *mcu;
@@ -465,19 +462,19 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
   for (int mcu_y = 0; mcu_y < ny_mcu; mcu_y++)
     for (int mcu_x = 0; mcu_x < nx_mcu; mcu_x++) {
       for (int c = 0; c < n_components; c++) {
-        int component_id = payload[1 + c * 2] - 1;
+        int component_id = payload[1 + c * 2];
         int dc_table_id = upper_half(payload[2 + c * 2]);
         int ac_table_id = lower_half(payload[2 + c * 2]);
         Component *component = &decoder_state->components[component_id];
 
-        for (int y = 0; y < component->y_sampling_factor; y++)
-          for (int x = 0; x < component->x_sampling_factor; x++) {
+        for (int y = 0; y < component->y_sampling; y++)
+          for (int x = 0; x < component->x_sampling; x++) {
             uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
             check(sof0_decode_data_unit(f, block_u8, decoder_state, dc_table_id, ac_table_id, component_id));
 
             // place to mcu. A.2.3 and JFIF p.4
-            int n_repeat_y = max_y_sampling / component->y_sampling_factor;
-            int n_repeat_x = max_x_sampling / component->x_sampling_factor;
+            int n_repeat_y = decoder_state->max_y_sampling / component->y_sampling;
+            int n_repeat_x = decoder_state->max_x_sampling / component->x_sampling;
             for (int j = 0; j < DATA_UNIT_SIZE * n_repeat_y; j++) {
               int row_idx = y * DATA_UNIT_SIZE + j;
               for (int i = 0; i < DATA_UNIT_SIZE * n_repeat_x; i++) {
