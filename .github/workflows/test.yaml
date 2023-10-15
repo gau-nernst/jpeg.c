@@ -14,16 +14,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            cc: gcc
-          - os: macos-latest
-            cc: clang
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v3
-      - run: curl ${{ env.sample_image_url }} -o sample.jpg
-      - run: ${{ matrix.cc }} jpeg.c -o jpeg -lm && ./jpeg sample.jpg
-      - run: ${{ matrix.cc }} jpeg.c -o jpeg -lm -O3 -ffast-math && ./jpeg sample.jpg
+      - run: make test_all
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.7'
+      - run: make python
 
   test-windows:
     runs-on: windows-latest
@@ -31,5 +29,8 @@ jobs:
       - uses: actions/checkout@v3
       - run: curl ${{ env.sample_image_url }} -o sample.jpg
       - uses: ilammy/msvc-dev-cmd@v1
-      - run: cl jpeg.c && ./jpeg sample.jpg
-      - run: cl jpeg.c /O2 /fp:fast && ./jpeg sample.jpg
+      - run: cl test.c jpeg.c && ./test sample.jpg
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.7'
+      - run: python jpeg_python/setup.py build_ext -i

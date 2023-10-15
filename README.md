@@ -2,25 +2,19 @@
 
 C port of https://github.com/gau-nernst/jpeg-python
 
-Only JPEG Baseline is implemented.
+Only JPEG Baseline is implemented. Basic support for restart markers.
 
-Linux
+Some test images: https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/A_2_1-BF-01.htm
+- I cannot get https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg444.jpg decoded correctly. Not sure why.
 
-```bash
-gcc jpeg.c -o jpeg -lm
-./jpeg sample.jpg
-```
-
-MacOS
+Linux and MacOS
 
 ```bash
-clang jpeg.c -o jpeg
-./jpeg sample.jpg
+make test_all
 ```
 
 Windows
 
 ```bash
-cl jpeg.c
-./jpeg sample.jpg
+cl test.c jpeg.c && ./test sample.jpg
 ```
