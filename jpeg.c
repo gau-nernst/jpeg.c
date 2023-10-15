@@ -86,8 +86,6 @@ enum MARKER {
   EXP = 0xDF,
 
   APP0 = 0xE0,
-  APP1 = 0xE1,
-
   COM = 0xFE,
 };
 
@@ -123,7 +121,6 @@ static uint8_t upper_half(uint8_t x) { return x >> 4; }
 static uint8_t lower_half(uint8_t x) { return x & 0xF; }
 
 static int handle_app0(const uint8_t *, uint16_t);
-static int handle_app1(const uint8_t *, uint16_t);
 static int handle_dqt(const uint8_t *, uint16_t, DecoderState *);
 static int handle_dht(const uint8_t *, uint16_t, DecoderState *);
 static int handle_sof0(const uint8_t *, uint16_t, DecoderState *);
@@ -187,12 +184,6 @@ int decode_jpeg(FILE *f, Image8 *image) {
         return 1;
       break;
 
-    case APP1:
-      fprintf(stderr, "APP1 (length = %d)\n", length);
-      if (handle_app1(payload, length))
-        return 1;
-      break;
-
     case DQT:
       fprintf(stderr, "DQT (length = %d)\n", length);
       if (handle_dqt(payload, length, &decoder_state))
@@ -230,7 +221,11 @@ int decode_jpeg(FILE *f, Image8 *image) {
       break;
 
     default:
-      fprintf(stderr, "Unknown marker (length = %d)\n", length);
+      if ((APP0 < marker[1]) & (marker[1] <= APP0 + 15)) {
+        fprintf(stderr, "APP%d (length = %d)\n", marker[1] - APP0, length);
+        fprintf(stderr, "  identifier = %s\n", payload);
+      } else
+        fprintf(stderr, "Unknown marker (length = %d)\n", length);
       break;
     }
 
@@ -260,16 +255,6 @@ int handle_app0(const uint8_t *payload, uint16_t length) {
   return 0;
 }
 
-int handle_app1(const uint8_t *payload, uint16_t length) {
-  fprintf(stderr, "  identifier = %s\n", payload);
-
-  if (strcmp((const char *)payload, "Exif") == 0) {
-    fprintf(stderr, "  Exif detected\n");
-  } else
-    fprintf(stderr, "  Invalid identifier\n");
-
-  return 0;
-}
 
 // ITU-T.81 B.2.4.1
 // there can be multiple quantization tables within 1 DQT segment
@@ -420,7 +405,6 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
     int component_id = payload[1] - 1;
     int dc_table_id = upper_half(payload[2]);
     int ac_table_id = lower_half(payload[2]);
-    Component *component = &decoder_state->components[component_id];
 
     decoder_state->dc_preds[0] = 0;
     decoder_state->is_restart = 0;
@@ -548,7 +532,7 @@ int nextbit(FILE *f, uint16_t *out, DecoderState *decoder_state) {
           fprintf(stderr, "DNL marker. Not implemented\n");
           return 1;
         } else {
-          fprintf(stderr, "Found a marker in scan %X. Decode error?", b2);
+          fprintf(stderr, "Found marker %X in scan. Decode error?", b2);
           return 1;
         }
       }
