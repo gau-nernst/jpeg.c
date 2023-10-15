@@ -30,7 +30,6 @@ jobs:
       - run: curl ${{ env.sample_image_url }} -o sample.jpg
       - uses: ilammy/msvc-dev-cmd@v1
       - run: cl test.c jpeg.c && ./test sample.jpg
-      # - run: cl jpeg.c /O2 /fp:fast && ./jpeg sample.jpg
       - uses: actions/setup-python@v4
         with:
           python-version: '3.7'
