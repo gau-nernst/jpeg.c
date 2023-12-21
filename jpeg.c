@@ -133,9 +133,9 @@ static int sof0_decode_data_unit(FILE *, uint8_t[DATA_UNIT_SIZE][DATA_UNIT_SIZE]
 static void idct_2d_(double *);
 static void ycbcr_to_rgb_(uint8_t *);
 
-// clang-format off
 // ITU T.81 Figure A.6
-const uint8_t ZIG_ZAG[DATA_UNIT_SIZE][DATA_UNIT_SIZE] = {
+// clang-format off
+static const uint8_t ZIG_ZAG[DATA_UNIT_SIZE][DATA_UNIT_SIZE] = {
   { 0,  1,  5,  6, 14, 15, 27, 28},
   { 2,  4,  7, 13, 16, 26, 29, 42},
   { 3,  8, 12, 17, 25, 30, 41, 43},
@@ -145,8 +145,18 @@ const uint8_t ZIG_ZAG[DATA_UNIT_SIZE][DATA_UNIT_SIZE] = {
   {21, 34, 37, 47, 50, 56, 59, 61},
   {35, 36, 48, 49, 57, 58, 62, 63},
 };
+
+static const double DCT_TABLE[] = {
+   0.5000000000000000,  0.4903926402016152,  0.4619397662556434,  0.4157348061512726,
+   0.3535533905932738,  0.2777851165098011,  0.1913417161825449,  0.0975451610080642,
+   0.0000000000000000, -0.0975451610080641, -0.1913417161825449, -0.2777851165098010,
+  -0.3535533905932737, -0.4157348061512727, -0.4619397662556434, -0.4903926402016152,
+  -0.5000000000000000, -0.4903926402016152, -0.4619397662556434, -0.4157348061512726,
+  -0.3535533905932738, -0.2777851165098011, -0.1913417161825449, -0.0975451610080642,
+  -0.0000000000000000,  0.0975451610080641,  0.1913417161825449,  0.2777851165098010,
+   0.3535533905932737,  0.4157348061512727,  0.4619397662556434,  0.4903926402016152,
+};
 // clang-format on
-double DCT_MATRIX[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
 
 int decode_jpeg(FILE *f, Image8 *image) {
   uint8_t marker[2];
@@ -633,20 +643,12 @@ int sof0_decode_data_unit(FILE *f, uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SI
   return 0;
 }
 
-// a(u,v) * cos((v+1/2)*u*pi/N)
-void init_dct_matrix() {
-  for (int i = 0; i < DATA_UNIT_SIZE; i++)
-    for (int j = 0; j < DATA_UNIT_SIZE; j++)
-      DCT_MATRIX[i][j] = i == 0 ? 0.5 * M_SQRT1_2 : 0.5 * cos((j + 0.5) * i * M_PI / DATA_UNIT_SIZE);
-}
-
-// TODO: benchmark. use single-precision instead of double-precision?
 void idct_1d(double *x, double *out, size_t offset, size_t stride) {
-  for (int i = 0; i < DATA_UNIT_SIZE; i++) {
-    double result = 0;
-    for (int j = 0; j < DATA_UNIT_SIZE; j++)
-      result += x[offset + j * stride] * DCT_MATRIX[j][i]; // DCT transposed
-    out[offset + i * stride] = result;
+  for (int k = 0; k < DATA_UNIT_SIZE; k++) {
+    double result = x[offset] * 0.3535533905932738; // 1/sqrt(8)
+    for (int n = 1; n < DATA_UNIT_SIZE; n++)
+      result += x[offset + n * stride] * DCT_TABLE[((2 * k + 1) * n) % 32];
+    out[offset + k * stride] = result;
   }
 }
 
