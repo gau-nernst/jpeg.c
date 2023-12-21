@@ -399,8 +399,8 @@ int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
   // not used by Baseline DCT
   fprintf(stderr, "  ss = %d\n", payload[1 + n_components * 2]);
   fprintf(stderr, "  se = %d\n", payload[2 + n_components * 2]);
-  fprintf(stderr, "  ah = %d\n", payload[3 + n_components * 2]);
-  fprintf(stderr, "  al = %d\n", payload[4 + n_components * 2]);
+  fprintf(stderr, "  ah = %d\n", upper_half(payload[3 + n_components * 2]));
+  fprintf(stderr, "  al = %d\n", lower_half(payload[3 + n_components * 2]));
 
   if (n_components == 1) {
     // Non-interleaved order. A.2.2
