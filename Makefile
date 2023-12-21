@@ -28,4 +28,4 @@ format:
 	clang-format -i jpeg.c jpeg.h test.c jpeg_python/jpeg_python.c
 
 clean:
-	rm *.o *.tiff
+	rm *.o *.tiff ./test
