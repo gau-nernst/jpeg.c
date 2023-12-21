@@ -159,7 +159,7 @@ static const double DCT_TABLE[] = {
 int decode_jpeg(FILE *f, Image8 *image) {
   uint8_t marker[2];
   uint16_t length;
-  uint8_t *payload = NULL;
+  uint8_t *buffer = NULL;
   Decoder decoder_state;
   decoder_state.image = image;
 
@@ -174,13 +174,11 @@ int decode_jpeg(FILE *f, Image8 *image) {
       length = 0;
     } else {
       try_fread(&length, 1, 2, f);
-      length = read_be_16((const uint8_t *)&length) - 2;
-    }
-    if (length) {
+      length = read_be_16((uint8_t *)&length) - 2;
+
       // TODO: re-use payload buffer
-      // max buffer size?
-      try_malloc(payload, length);
-      try_fread(payload, 1, length, f);
+      try_malloc(buffer, length);
+      try_fread(buffer, 1, length, f);
     }
 
     switch (marker[1]) {
@@ -190,38 +188,38 @@ int decode_jpeg(FILE *f, Image8 *image) {
 
     case APP0:
       fprintf(stderr, "APP0 (length = %d)\n", length);
-      if (handle_app0(payload, length))
+      if (handle_app0(buffer, length))
         return 1;
       break;
 
     case DQT:
       fprintf(stderr, "DQT (length = %d)\n", length);
-      if (handle_dqt(payload, length, &decoder_state))
+      if (handle_dqt(buffer, length, &decoder_state))
         return 1;
       break;
 
     case DHT:
       fprintf(stderr, "DHT (length = %d)\n", length);
-      if (handle_dht(payload, length, &decoder_state))
+      if (handle_dht(buffer, length, &decoder_state))
         return 1;
       break;
 
     case SOF0:
       fprintf(stderr, "SOF0 (length = %d)\n", length);
-      if (handle_sof0(payload, length, &decoder_state))
+      if (handle_sof0(buffer, length, &decoder_state))
         return 1;
       break;
 
     case DRI:
       fprintf(stderr, "DRI (length = %d)\n", length);
       assert(length >= 2, "Payload not long enough");
-      decoder_state.restart_interval = read_be_16(payload);
+      decoder_state.restart_interval = read_be_16(buffer);
       fprintf(stderr, "  restart interval = %d\n", decoder_state.restart_interval);
       break;
 
     case SOS:
       fprintf(stderr, "SOS\n");
-      if (handle_sos(payload, length, &decoder_state, f))
+      if (handle_sos(buffer, length, &decoder_state, f))
         return 1;
       break;
 
@@ -233,13 +231,13 @@ int decode_jpeg(FILE *f, Image8 *image) {
     default:
       if ((APP0 < marker[1]) & (marker[1] <= APP0 + 15)) {
         fprintf(stderr, "APP%d (length = %d)\n", marker[1] - APP0, length);
-        fprintf(stderr, "  identifier = %s\n", payload);
+        fprintf(stderr, "  identifier = %s\n", buffer);
       } else
         fprintf(stderr, "Unknown marker (length = %d)\n", length);
       break;
     }
 
-    try_free(payload);
+    try_free(buffer);
     fprintf(stderr, "\n");
   }
 
