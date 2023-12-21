@@ -30,15 +30,13 @@ static PyObject *jpeg_python_decode_jpeg(PyObject *self, PyObject *args) {
 
 // method table
 static PyMethodDef JpegPythonMethods[] = {
-    {"decode_jpeg", jpeg_python_decode_jpeg, METH_VARARGS, "decode_jpeg docstring"}, {NULL, NULL, 0, NULL} // sentinel
+    {"decode_jpeg", jpeg_python_decode_jpeg, METH_VARARGS, "decode_jpeg docstring"}, {NULL, NULL, 0, NULL}, // sentinel
 };
 
 // module definition
-static struct PyModuleDef jpeg_module = {PyModuleDef_HEAD_INIT, "jpeg_python", "module docstring", -1,
-                                         JpegPythonMethods};
+static struct PyModuleDef jpeg_module = {
+    PyModuleDef_HEAD_INIT, "jpeg_python", "module docstring", -1, JpegPythonMethods,
+};
 
 // module initialization
-PyMODINIT_FUNC PyInit_jpeg_python(void) {
-  init_dct_matrix();
-  return PyModule_Create(&jpeg_module);
-}
+PyMODINIT_FUNC PyInit_jpeg_python(void) { return PyModule_Create(&jpeg_module); }
