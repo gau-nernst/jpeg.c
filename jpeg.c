@@ -90,7 +90,7 @@ enum MARKER {
   COM = 0xFE,
 };
 
-typedef struct {
+typedef struct HuffmanTable {
   uint8_t *huffsize;
   uint16_t *huffcode;
   uint8_t *huffval;
@@ -99,13 +99,13 @@ typedef struct {
   uint8_t valptr[16];
 } HuffmanTable;
 
-typedef struct {
+typedef struct Component {
   int x_sampling;
   int y_sampling;
   int q_table_id;
 } Component;
 
-typedef struct {
+typedef struct Decoder {
   uint8_t encoding;
   uint16_t restart_interval;
   uint16_t q_tables[4][DATA_UNIT_SIZE * DATA_UNIT_SIZE];
@@ -116,19 +116,19 @@ typedef struct {
   int dc_preds[MAX_COMPONENTS];
   int is_restart;
   Image8 *image;
-} DecoderState;
+} Decoder;
 
 static uint16_t read_be_16(const uint8_t *buffer) { return (buffer[0] << 8) | buffer[1]; }
 static uint8_t upper_half(uint8_t x) { return x >> 4; }
 static uint8_t lower_half(uint8_t x) { return x & 0xF; }
 
 static int handle_app0(const uint8_t *, uint16_t);
-static int handle_dqt(const uint8_t *, uint16_t, DecoderState *);
-static int handle_dht(const uint8_t *, uint16_t, DecoderState *);
-static int handle_sof0(const uint8_t *, uint16_t, DecoderState *);
-static int handle_sos(const uint8_t *, uint16_t, DecoderState *, FILE *);
+static int handle_dqt(const uint8_t *, uint16_t, Decoder *);
+static int handle_dht(const uint8_t *, uint16_t, Decoder *);
+static int handle_sof0(const uint8_t *, uint16_t, Decoder *);
+static int handle_sos(const uint8_t *, uint16_t, Decoder *, FILE *);
 
-static int sof0_decode_data_unit(FILE *, uint8_t[DATA_UNIT_SIZE][DATA_UNIT_SIZE], DecoderState *, int, int, int);
+static int sof0_decode_data_unit(FILE *, uint8_t[DATA_UNIT_SIZE][DATA_UNIT_SIZE], Decoder *, int, int, int);
 
 static void idct_2d_(double *);
 static void ycbcr_to_rgb_(uint8_t *);
@@ -162,7 +162,7 @@ int decode_jpeg(FILE *f, Image8 *image) {
   uint8_t marker[2];
   uint16_t length;
   uint8_t *payload = NULL;
-  DecoderState decoder_state;
+  Decoder decoder_state;
   decoder_state.image = image;
 
   uint8_t finished = 0;
@@ -268,7 +268,7 @@ int handle_app0(const uint8_t *payload, uint16_t length) {
 
 // ITU-T.81 B.2.4.1
 // there can be multiple quantization tables within 1 DQT segment
-int handle_dqt(const uint8_t *payload, uint16_t length, DecoderState *decoder_state) {
+int handle_dqt(const uint8_t *payload, uint16_t length, Decoder *decoder_state) {
   int offset = 0;
   while (offset < length) {
     uint8_t precision = upper_half(payload[offset]);
@@ -299,7 +299,7 @@ int handle_dqt(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
 
 // ITU-T.81 B.2.4.2
 // there can be multiple huffman tables within 1 DHT segment
-int handle_dht(const uint8_t *payload, uint16_t length, DecoderState *decoder_state) {
+int handle_dht(const uint8_t *payload, uint16_t length, Decoder *decoder_state) {
   int offset = 0;
   while (offset < length) {
     uint8_t class = upper_half(payload[offset]);
@@ -354,7 +354,7 @@ int handle_dht(const uint8_t *payload, uint16_t length, DecoderState *decoder_st
   return 0;
 }
 
-int handle_sof0(const uint8_t *payload, uint16_t length, DecoderState *decoder_state) {
+int handle_sof0(const uint8_t *payload, uint16_t length, Decoder *decoder_state) {
   Image8 *image = decoder_state->image;
   decoder_state->encoding = SOF0;
 
@@ -394,7 +394,7 @@ int handle_sof0(const uint8_t *payload, uint16_t length, DecoderState *decoder_s
   return 0;
 }
 
-int handle_sos(const uint8_t *payload, uint16_t length, DecoderState *decoder_state, FILE *f) {
+int handle_sos(const uint8_t *payload, uint16_t length, Decoder *decoder_state, FILE *f) {
   assert(decoder_state->encoding == SOF0, "Only Baseline JPEG is support");
   Image8 *image = decoder_state->image;
 
@@ -518,7 +518,7 @@ int32_t extend(uint16_t value, uint16_t n_bits) {
 }
 
 // Figure F.18
-int nextbit(FILE *f, uint16_t *out, DecoderState *decoder_state) {
+int nextbit(FILE *f, uint16_t *out, Decoder *decoder_state) {
   // impure function
   static uint8_t b, cnt = 0;
 
@@ -551,7 +551,7 @@ int nextbit(FILE *f, uint16_t *out, DecoderState *decoder_state) {
 }
 
 // Figure F.17
-int receive(FILE *f, uint16_t ssss, uint16_t *out, DecoderState *decoder_state) {
+int receive(FILE *f, uint16_t ssss, uint16_t *out, Decoder *decoder_state) {
   uint16_t v = 0, temp;
   for (int i = 0; i < ssss; i++) {
     check(nextbit(f, &temp, decoder_state));
@@ -564,7 +564,7 @@ int receive(FILE *f, uint16_t ssss, uint16_t *out, DecoderState *decoder_state) 
 }
 
 // Figure F.16
-int decode(FILE *f, HuffmanTable *h_table, uint16_t *out, DecoderState *decoder_state) {
+int decode(FILE *f, HuffmanTable *h_table, uint16_t *out, Decoder *decoder_state) {
   int i = -1;
   uint16_t code, temp;
   check(nextbit(f, &code, decoder_state));
@@ -581,7 +581,7 @@ int decode(FILE *f, HuffmanTable *h_table, uint16_t *out, DecoderState *decoder_
   return 0;
 }
 
-int sof0_decode_data_unit(FILE *f, uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE], DecoderState *decoder_state,
+int sof0_decode_data_unit(FILE *f, uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE], Decoder *decoder_state,
                           int dc_table_id, int ac_table_id, int component_id) {
   HuffmanTable *dc_table = &decoder_state->h_tables[0][dc_table_id];
   HuffmanTable *ac_table = &decoder_state->h_tables[1][ac_table_id];
