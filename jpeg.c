@@ -1,11 +1,9 @@
 #include "jpeg.h"
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define _USE_MATH_DEFINES // math constants for MSVC
-#include <math.h>
 
 #define DATA_UNIT_SIZE 8
 #define MAX_HUFFMAN_CODE_LENGTH 16
