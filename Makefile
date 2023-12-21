@@ -1,10 +1,19 @@
 images = jpeg420exif.jpg jpeg422jfif.jpg jpeg400jfif.jpg jpeg444.jpg
+CFLAGS += -Wall
+
+ifndef DEBUG
+CFLAGS += -Ofast
+endif
+
+ifdef DEBUG
+CFLAGS += -fsanitize=address
+endif
 
 $(images):
 	wget "https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/$@" -q
 
-test: jpeg.c test.c
-	cc -Wall $^ -o test -lm
+test: jpeg.o test.o
+	$(CC) $(CFLAGS) $^ -o $@ -lm
 
 test_all: test $(images)
 	./test jpeg420exif.jpg
@@ -17,3 +26,6 @@ python:
 
 format:
 	clang-format -i jpeg.c jpeg.h test.c jpeg_python/jpeg_python.c
+
+clean:
+	rm *.o *.tiff ./test

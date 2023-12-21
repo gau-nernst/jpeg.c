@@ -8,5 +8,4 @@ typedef struct {
   uint8_t *data;
 } Image8;
 
-void init_dct_matrix();
 int decode_jpeg(FILE *, Image8 *);

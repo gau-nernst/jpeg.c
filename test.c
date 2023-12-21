@@ -66,7 +66,6 @@ int main(int argc, char *argv[]) {
   }
 
   Image8 image = {0};
-  init_dct_matrix();
   int decode_result = decode_jpeg(f, &image);
   fclose(f);
 
