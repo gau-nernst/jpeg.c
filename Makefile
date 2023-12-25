@@ -16,6 +16,7 @@ test: jpeg.o test.o
 	$(CC) $(CFLAGS) $^ -o $@ -lm
 
 test_all: test $(images)
+	rm -f *.tiff
 	./test jpeg420exif.jpg
 	./test jpeg422jfif.jpg
 	./test jpeg400jfif.jpg
