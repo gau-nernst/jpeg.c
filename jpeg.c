@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DATA_UNIT_SIZE 8
+#define BLOCK_SIZE 8
 #define MAX_HUFFMAN_CODE_LENGTH 16
 #define MAX_COMPONENTS 4
 
@@ -119,7 +119,7 @@ typedef struct Component {
 typedef struct Decoder {
   uint8_t encoding;
   uint16_t restart_interval;
-  uint16_t q_tables[4][DATA_UNIT_SIZE * DATA_UNIT_SIZE];
+  uint16_t q_tables[4][BLOCK_SIZE * BLOCK_SIZE];
   HuffmanTable h_tables[2][4];
   Component components[MAX_COMPONENTS];
   int max_x_sampling;
@@ -142,15 +142,14 @@ static void handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen)
 static void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen);
 static void handle_sos(Decoder *decoder, const uint8_t *buffer, uint16_t buflen, FILE *f);
 
-static void sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block[DATA_UNIT_SIZE][DATA_UNIT_SIZE], int, int,
-                                  int);
+static void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block[BLOCK_SIZE][BLOCK_SIZE], int, int, int);
 
 static void idct_2d_(double *);
 static void ycbcr_to_rgb_(uint8_t *);
 
 // ITU T.81 Figure A.6
 // clang-format off
-static const uint8_t ZIG_ZAG[DATA_UNIT_SIZE][DATA_UNIT_SIZE] = {
+static const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
   { 0,  1,  5,  6, 14, 15, 27, 28},
   { 2,  4,  7, 13, 16, 26, 29, 42},
   { 3,  8, 12, 17, 25, 30, 41, 43},
@@ -177,7 +176,7 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
   uint8_t marker[2];
   uint16_t buflen;
   uint8_t *buffer = NULL;
-  Decoder decoder;
+  Decoder decoder = {0};
 
   bool finished = false;
   while (!finished) {
@@ -284,23 +283,23 @@ void handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
   while (offset < buflen) {
     uint8_t precision = upper_half(buffer[offset]);
     uint8_t identifier = lower_half(buffer[offset]);
-    int table_size = 1 + DATA_UNIT_SIZE * DATA_UNIT_SIZE * (precision + 1);
+    int table_size = 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1);
 
     fprintf(stderr, "  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
     assert(buflen >= offset + table_size, "Payload is too short");
 
     uint16_t *q_table = decoder->q_tables[identifier];
     if (precision) {
-      for (int i = 0; i < DATA_UNIT_SIZE * DATA_UNIT_SIZE; i++)
+      for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++)
         q_table[i] = read_be_16(buffer + offset + 1 + i * 2);
     } else {
-      for (int i = 0; i < DATA_UNIT_SIZE * DATA_UNIT_SIZE; i++)
+      for (int i = 0; i < BLOCK_SIZE * BLOCK_SIZE; i++)
         q_table[i] = buffer[offset + 1 + i];
     }
 
-    for (int i = 0; i < DATA_UNIT_SIZE; i++) {
+    for (int i = 0; i < BLOCK_SIZE; i++) {
       fprintf(stderr, "  ");
-      for (int j = 0; j < DATA_UNIT_SIZE; j++)
+      for (int j = 0; j < BLOCK_SIZE; j++)
         fprintf(stderr, " %3d", q_table[ZIG_ZAG[i][j]]);
       fprintf(stderr, "\n");
     }
@@ -413,7 +412,7 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
 
   uint8_t n_components = payload[0];
   fprintf(stderr, "  n_components in scan = %d\n", n_components);
-  assert(n_components <= decoder->n_channels, "Scan contains more channels than declared");
+  assert(n_components <= decoder->n_channels, "Scan contains more channels than declared in SOF");
 
   for (int i = 0; i < n_components; i++)
     fprintf(stderr, "  component %d: DC coding table = %d  AC coding table = %d\n", payload[1 + i * 2],
@@ -435,13 +434,12 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
     decoder->is_restart = 0;
 
     // TODO: take into account sampling factor
-    int nx_blocks = ceil_div(decoder->width, DATA_UNIT_SIZE);
-    int ny_blocks = ceil_div(decoder->height, DATA_UNIT_SIZE);
-    fprintf(stderr, "%d %d\n", nx_blocks, ny_blocks);
+    int nx_blocks = ceil_div(decoder->width, BLOCK_SIZE);
+    int ny_blocks = ceil_div(decoder->height, BLOCK_SIZE);
 
     for (int mcu_idx = 0; mcu_idx < ny_blocks * nx_blocks;) {
-      uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
-      sof0_decode_data_unit(decoder, f, block_u8, dc_table_id, ac_table_id, component_id);
+      uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
+      decode_block_sof0(decoder, f, block_u8, dc_table_id, ac_table_id, component_id);
 
       // E.2.4
       // When restart marker is received, ignore current MCU. Reset decoder state and move on to the next MCU
@@ -456,10 +454,10 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
       // place mcu to image buffer
       int y = mcu_idx / nx_blocks;
       int x = mcu_idx % nx_blocks;
-      for (int j = 0; j < min(DATA_UNIT_SIZE, decoder->height - y * DATA_UNIT_SIZE); j++) {
-        int row_idx = y * DATA_UNIT_SIZE + j;
-        for (int i = 0; i < min(DATA_UNIT_SIZE, decoder->width - x * DATA_UNIT_SIZE); i++) {
-          int col_idx = x * DATA_UNIT_SIZE + i;
+      for (int j = 0; j < min(BLOCK_SIZE, decoder->height - y * BLOCK_SIZE); j++) {
+        int row_idx = y * BLOCK_SIZE + j;
+        for (int i = 0; i < min(BLOCK_SIZE, decoder->width - x * BLOCK_SIZE); i++) {
+          int col_idx = x * BLOCK_SIZE + i;
           decoder->image[(row_idx * decoder->width + col_idx) * decoder->n_channels + component_id] = block_u8[j][i];
         }
       }
@@ -470,8 +468,8 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
   // Interleaved order. A.2.3
   // calculate number of MCUs based on chroma-subsampling
   // TODO: handle restart markers for 3-channel
-  int mcu_width = DATA_UNIT_SIZE * decoder->max_x_sampling;
-  int mcu_height = DATA_UNIT_SIZE * decoder->max_y_sampling;
+  int mcu_width = BLOCK_SIZE * decoder->max_x_sampling;
+  int mcu_height = BLOCK_SIZE * decoder->max_y_sampling;
   int nx_mcu = ceil_div(decoder->width, mcu_width);
   int ny_mcu = ceil_div(decoder->height, mcu_height);
 
@@ -490,17 +488,17 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
 
         for (int y = 0; y < component->y_sampling; y++)
           for (int x = 0; x < component->x_sampling; x++) {
-            uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
-            sof0_decode_data_unit(decoder, f, block_u8, dc_table_id, ac_table_id, component_id);
+            uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
+            decode_block_sof0(decoder, f, block_u8, dc_table_id, ac_table_id, component_id);
 
             // place to mcu. A.2.3 and JFIF p.4
             // NOTE: assume order in the scan is YCbCr
             int n_repeat_y = decoder->max_y_sampling / component->y_sampling;
             int n_repeat_x = decoder->max_x_sampling / component->x_sampling;
-            for (int j = 0; j < DATA_UNIT_SIZE * n_repeat_y; j++) {
-              int row_idx = y * DATA_UNIT_SIZE + j;
-              for (int i = 0; i < DATA_UNIT_SIZE * n_repeat_x; i++) {
-                int col_idx = x * DATA_UNIT_SIZE + i;
+            for (int j = 0; j < BLOCK_SIZE * n_repeat_y; j++) {
+              int row_idx = y * BLOCK_SIZE + j;
+              for (int i = 0; i < BLOCK_SIZE * n_repeat_x; i++) {
+                int col_idx = x * BLOCK_SIZE + i;
                 mcu[(row_idx * mcu_width + col_idx) * n_components + c] = block_u8[j / n_repeat_y][i / n_repeat_x];
               }
             }
@@ -528,46 +526,56 @@ int32_t extend(uint16_t value, uint16_t n_bits) {
 }
 
 // Figure F.18
-int nextbit(Decoder *decoder, FILE *f, uint16_t *out) {
+uint8_t nextbit(Decoder *decoder, FILE *f) {
   // impure function
-  static uint8_t b, cnt = 0;
+  static uint8_t CNT = 0, B;
 
-  while (cnt == 0) {
-    try_fread(&b, 1, 1, f);
-    cnt = 8;
+  if (CNT == 0) {
+    try_fread(&B, 1, 1, f);
+    if (ERROR)
+      return 0;
+    CNT = 8;
 
-    // byte stuffing: ITU T.81 F.1.2.3
-    if (b == 0xFF) {
-      uint8_t b2;
-      try_fread(&b2, 1, 1, f);
-      if (b2 != 0) {
-        if ((RST0 <= b2) & (b2 < RST0 + 8)) {
-          fprintf(stderr, "Encounter RST%d marker\n", b2 - RST0);
-          cnt = 0;
+    // potential marker. need to read next byte
+    // if next byte is 0x00, ignore this byte (byte stuffing: ITU T.81 F.1.2.3)
+    if (B == 0xFF) {
+      uint8_t B2;
+      try_fread(&B2, 1, 1, f);
+      if (ERROR)
+        return 0;
+
+      if (B2 != 0) {
+        if ((RST0 <= B2) & (B2 < RST0 + 8)) {
+          fprintf(stderr, "Encounter RST%d marker\n", B2 - RST0);
+          CNT = 0;
           decoder->is_restart = 1;
           return 0;
-        } else if (b2 == DNL) {
-          fprintf(stderr, "DNL marker. Not implemented\n");
-          return 1;
+        } else if (B2 == DNL) {
+          fprintf(stderr, "DNL marker. Not implemented");
+          ERROR = true;
+          return 0;
         } else {
-          fprintf(stderr, "Found marker %X in scan. Decode error?", b2);
-          return 1;
+          fprintf(stderr, "Found marker %X in scan. Decode error?", B2);
+          ERROR = true;
+          return 0;
         }
       }
     }
   }
-  *out = (b >> --cnt) & 1;
-  return 0;
+
+  uint8_t BIT = B >> 7;
+  CNT--;
+  B <<= 1;
+  return BIT;
 }
 
 // Figure F.17
 int receive(Decoder *decoder, FILE *f, uint16_t ssss, uint16_t *out) {
-  uint16_t v = 0, temp;
+  uint16_t v = 0;
   for (int i = 0; i < ssss; i++) {
-    assert(nextbit(decoder, f, &temp) == 0, "Error");
-    if (decoder->is_restart)
+    v = (v << 1) + nextbit(decoder, f);
+    if (decoder->is_restart | ERROR)
       return 0;
-    v = (v << 1) + temp;
   }
   *out = v;
   return 0;
@@ -576,31 +584,28 @@ int receive(Decoder *decoder, FILE *f, uint16_t ssss, uint16_t *out) {
 // Figure F.16
 int decode(Decoder *decoder, FILE *f, HuffmanTable *h_table, uint16_t *out) {
   int i = -1;
-  uint16_t code, temp;
-  assert(nextbit(decoder, f, &code) == 0, "Error");
+  uint16_t code = nextbit(decoder, f);
   if (decoder->is_restart)
     return 0;
 
   while (code > h_table->maxcode[++i]) {
-    assert(nextbit(decoder, f, &temp) == 0, "Error");
+    code = (code << 1) + nextbit(decoder, f);
     if (decoder->is_restart)
       return 0;
-    code = (code << 1) + temp;
   }
   *out = h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
   return 0;
 }
 
-void sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE], int dc_table_id,
-                           int ac_table_id, int component_id) {
+void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int dc_table_id,
+                       int ac_table_id, int component_id) {
   HuffmanTable *dc_table = &decoder->h_tables[0][dc_table_id];
   HuffmanTable *ac_table = &decoder->h_tables[1][ac_table_id];
   uint16_t *q_table = decoder->q_tables[decoder->components[component_id].q_table_id];
 
-  // NOTE: block can be negative
-  // NOTE: dequantized value can be out-of-range
-  int32_t block[DATA_UNIT_SIZE * DATA_UNIT_SIZE] = {0};
-  double block_f64[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
+  // NOTE: block can be negative, dequantized value can be out-of-range
+  int32_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
+  double block_f64[BLOCK_SIZE][BLOCK_SIZE];
 
   // decode DC: F.2.2.1
   uint16_t n_bits, value;
@@ -616,7 +621,7 @@ void sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block_u8[DATA_UNIT
   block[0] = decoder->dc_preds[component_id] * q_table[0];
 
   // decode AC: F.2.2.2
-  for (int k = 1; k < DATA_UNIT_SIZE * DATA_UNIT_SIZE;) {
+  for (int k = 1; k < BLOCK_SIZE * BLOCK_SIZE;) {
     uint16_t rs;
     assert(decode(decoder, f, ac_table, &rs) == 0, "Error");
     if (decoder->is_restart)
@@ -629,7 +634,7 @@ void sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block_u8[DATA_UNIT
       int rrrr = upper_half(rs);
       int ssss = lower_half(rs);
       k += rrrr;
-      assert(k < DATA_UNIT_SIZE * DATA_UNIT_SIZE, "Encounter invalid code");
+      assert(k < BLOCK_SIZE * BLOCK_SIZE, "Encounter invalid code");
       assert(receive(decoder, f, ssss, &value) == 0, "Error");
       if (decoder->is_restart)
         return;
@@ -639,33 +644,33 @@ void sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block_u8[DATA_UNIT
   }
 
   // undo zig-zag
-  for (int i = 0; i < DATA_UNIT_SIZE; i++)
-    for (int j = 0; j < DATA_UNIT_SIZE; j++)
+  for (int i = 0; i < BLOCK_SIZE; i++)
+    for (int j = 0; j < BLOCK_SIZE; j++)
       block_f64[i][j] = block[ZIG_ZAG[i][j]];
 
   idct_2d_((double *)block_f64);
 
   // level shift and rounding. A.3.1
-  for (int i = 0; i < DATA_UNIT_SIZE; i++)
-    for (int j = 0; j < DATA_UNIT_SIZE; j++)
+  for (int i = 0; i < BLOCK_SIZE; i++)
+    for (int j = 0; j < BLOCK_SIZE; j++)
       block_u8[i][j] = clip(round(block_f64[i][j]) + 128, 0, 255);
 }
 
 void idct_1d(double *x, double *out, size_t offset, size_t stride) {
-  for (int k = 0; k < DATA_UNIT_SIZE; k++) {
+  for (int k = 0; k < BLOCK_SIZE; k++) {
     double result = x[offset] * 0.3535533905932738; // 1/sqrt(8)
-    for (int n = 1; n < DATA_UNIT_SIZE; n++)
+    for (int n = 1; n < BLOCK_SIZE; n++)
       result += x[offset + n * stride] * DCT_TABLE[((2 * k + 1) * n) % 32];
     out[offset + k * stride] = result;
   }
 }
 
 void idct_2d_(double *x) {
-  double temp[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
-  for (int i = 0; i < DATA_UNIT_SIZE; i++)
-    idct_1d(x, (double *)temp, i * DATA_UNIT_SIZE, 1); // row-wise
-  for (int j = 0; j < DATA_UNIT_SIZE; j++)
-    idct_1d((double *)temp, x, j, DATA_UNIT_SIZE); // column-wise
+  double temp[BLOCK_SIZE][BLOCK_SIZE];
+  for (int i = 0; i < BLOCK_SIZE; i++)
+    idct_1d(x, (double *)temp, i * BLOCK_SIZE, 1); // row-wise
+  for (int j = 0; j < BLOCK_SIZE; j++)
+    idct_1d((double *)temp, x, j, BLOCK_SIZE); // column-wise
 }
 
 // JFIF p.3
