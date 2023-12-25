@@ -1,5 +1,6 @@
 #include "jpeg.h"
 #include <math.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -11,7 +12,25 @@
 #define MAX_HUFFMAN_CODE_LENGTH 16
 #define MAX_COMPONENTS 4
 
-#define try_free(ptr)                                                                                                  \
+#define ASSERT(condition, ...)                                                                                         \
+  if (!(condition)) {                                                                                                  \
+    fprintf(stderr, "Line %d: ", __LINE__);                                                                            \
+    fprintf(stderr, __VA_ARGS__);                                                                                      \
+    fprintf(stderr, "\n");                                                                                             \
+    raise(SIGABRT);                                                                                                    \
+  }
+
+#define _MALLOC(ptr, size)                                                                                             \
+  ptr = malloc(size);                                                                                                  \
+  ASSERT(ptr != NULL, "Failed to allocate memory");
+
+#define _FREAD(buffer, size, count, stream)                                                                            \
+  {                                                                                                                    \
+    size_t n_elems = fread(buffer, size, count, stream);                                                               \
+    ASSERT(n_elems == count, "Failed to read data. Perhaps EOF?");                                                     \
+  }
+
+#define _FREE(ptr)                                                                                                     \
   if (ptr != NULL) {                                                                                                   \
     free(ptr);                                                                                                         \
     ptr = NULL;                                                                                                        \
@@ -80,24 +99,6 @@ enum MARKER {
   COM = 0xFE,
 };
 
-#define ASSERT(condition, ...)                                                                                         \
-  if (!(condition)) {                                                                                                  \
-    fprintf(stderr, "Line %d: ", __LINE__);                                                                            \
-    fprintf(stderr, __VA_ARGS__);                                                                                      \
-    fprintf(stderr, "\n");                                                                                             \
-    raise(SIGABRT);                                                                                                    \
-  }
-
-#define _MALLOC(ptr, size)                                                                                             \
-  ptr = malloc(size);                                                                                                  \
-  ASSERT(ptr != NULL, "Failed to allocate memory");
-
-#define _FREAD(buffer, size, count, stream)                                                                            \
-  {                                                                                                                    \
-    size_t n_elems = fread(buffer, size, count, stream);                                                               \
-    ASSERT(n_elems == count, "Failed to read data. Perhaps EOF?");                                                     \
-  }
-
 typedef struct HuffmanTable {
   uint8_t *huffsize;
   uint16_t *huffcode;
@@ -122,7 +123,6 @@ typedef struct Decoder {
   int max_x_sampling;
   int max_y_sampling;
   int dc_preds[MAX_COMPONENTS];
-  bool is_restart;
   uint8_t *image;
   int width;
   int height;
@@ -143,6 +143,8 @@ static void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block[BLOCK_SIZ
 
 static void idct_2d_(double *);
 static void ycbcr_to_rgb_(uint8_t *);
+
+static jmp_buf RST_JMP_BUF;
 
 // ITU T.81 Figure A.6
 // clang-format off
@@ -216,8 +218,6 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
 
     case SOS:
       handle_sos(&decoder, buffer, buflen, f);
-      if (decoder.is_restart)
-        finished = true;
       break;
 
     case DRI:
@@ -241,7 +241,7 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
       break;
     }
 
-    try_free(buffer);
+    _FREE(buffer);
     fprintf(stderr, "\n");
   }
 
@@ -430,7 +430,6 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
     int ac_table_id = lower_half(payload[2]);
 
     decoder->dc_preds[component_id] = 0;
-    decoder->is_restart = false;
 
     // TODO: take into account sampling factor
     int nx_blocks = ceil_div(decoder->width, BLOCK_SIZE);
@@ -440,32 +439,29 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
 
     for (int mcu_idx = 0; mcu_idx < ny_blocks * nx_blocks;) {
       uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
-      decode_block_sof0(decoder, f, block_u8, dc_table_id, ac_table_id, component_id);
+      if (!setjmp(RST_JMP_BUF)) {
+        // normal flow. decode_block may encounter RSTx marker
+        decode_block_sof0(decoder, f, block_u8, dc_table_id, ac_table_id, component_id);
 
-      // E.2.4
-      // When restart marker is received, ignore current MCU
-      // reset decoder state, move to the next interval
-      // NOTE: we don't check for consecutive restart markers
-      if (decoder->is_restart) {
-        decoder->dc_preds[component_id] = 0;
-        decoder->is_restart = false;
-        mcu_idx = (++interval_idx) * decoder->restart_interval;
-        continue;
-      }
-
-      // place mcu to image buffer
-      int mcu_y = mcu_idx / nx_blocks;
-      int mcu_x = mcu_idx % nx_blocks;
-      for (int j = 0; j < min(BLOCK_SIZE, decoder->height - mcu_y * BLOCK_SIZE); j++) {
-        int row_idx = mcu_y * BLOCK_SIZE + j;
-        for (int i = 0; i < min(BLOCK_SIZE, decoder->width - mcu_x * BLOCK_SIZE); i++) {
-          int col_idx = mcu_x * BLOCK_SIZE + i;
-          decoder->image[(row_idx * decoder->width + col_idx) * decoder->n_channels + component_id - 1] =
-              block_u8[j][i];
+        // place mcu to image buffer
+        int mcu_y = mcu_idx / nx_blocks;
+        int mcu_x = mcu_idx % nx_blocks;
+        for (int j = 0; j < min(BLOCK_SIZE, decoder->height - mcu_y * BLOCK_SIZE); j++) {
+          int row_idx = mcu_y * BLOCK_SIZE + j;
+          for (int i = 0; i < min(BLOCK_SIZE, decoder->width - mcu_x * BLOCK_SIZE); i++) {
+            int col_idx = mcu_x * BLOCK_SIZE + i;
+            decoder->image[(row_idx * decoder->width + col_idx) * decoder->n_channels + component_id - 1] =
+                block_u8[j][i];
+          }
         }
+        mcu_idx++;
+      } else {
+        // encounter restart interval (E.2.4)
+        // ignore current MCU, reset decoder state, move to the next interval
+        // NOTE: we don't check for consecutive restart markers
+        decoder->dc_preds[component_id] = 0;
+        mcu_idx = (++interval_idx) * decoder->restart_interval;
       }
-
-      mcu_idx++;
     }
     return;
   }
@@ -480,7 +476,6 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
 
   for (int i = 0; i < MAX_COMPONENTS; i++)
     decoder->dc_preds[i] = 0;
-  decoder->is_restart = 0;
   uint8_t *mcu;
   _MALLOC(mcu, mcu_width * mcu_height * n_components);
 
@@ -532,7 +527,7 @@ int32_t extend(uint16_t value, uint16_t n_bits) {
 }
 
 // Figure F.18
-uint8_t nextbit(FILE *f, bool *is_restart) {
+uint8_t nextbit(FILE *f) {
   // impure function
   static uint8_t CNT = 0, B;
 
@@ -550,8 +545,7 @@ uint8_t nextbit(FILE *f, bool *is_restart) {
         if ((RST0 <= B2) && (B2 <= RST7)) {
           fprintf(stderr, "Encounter RST%d marker\n", B2 - RST0);
           CNT = 0;
-          *is_restart = true;
-          return 0;
+          longjmp(RST_JMP_BUF, 1);
         } else if (B2 == DNL) {
           ASSERT(false, "DNL marker. Not implemented");
         } else {
@@ -568,28 +562,20 @@ uint8_t nextbit(FILE *f, bool *is_restart) {
 }
 
 // Figure F.17
-uint16_t receive(FILE *f, uint16_t n_bits, bool *is_restart) {
+uint16_t receive(FILE *f, uint16_t n_bits) {
   uint16_t V = 0;
-  for (int i = 0; i < n_bits; i++) {
-    V = (V << 1) + nextbit(f, is_restart);
-    if (*is_restart)
-      return 0;
-  }
+  for (int i = 0; i < n_bits; i++)
+    V = (V << 1) + nextbit(f);
   return V;
 }
 
 // Figure F.16
-uint16_t decode(FILE *f, HuffmanTable *h_table, bool *is_restart) {
+uint16_t decode(FILE *f, HuffmanTable *h_table) {
   int i = 0;
-  uint16_t CODE = nextbit(f, is_restart);
-  if (*is_restart)
-    return 0;
+  uint16_t CODE = nextbit(f);
 
-  for (; CODE > h_table->maxcode[i]; i++) {
-    CODE = (CODE << 1) + nextbit(f, is_restart);
-    if (*is_restart)
-      return 0;
-  }
+  for (; CODE > h_table->maxcode[i]; i++)
+    CODE = (CODE << 1) + nextbit(f);
 
   return h_table->huffval[h_table->valptr[i] + CODE - h_table->mincode[i]];
 }
@@ -601,16 +587,12 @@ void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][B
   uint16_t *q_table = decoder->q_tables[decoder->components[component_id].q_table_id];
 
   // NOTE: block can be negative, dequantized value can be out-of-range
-  int32_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
+  int16_t block[BLOCK_SIZE * BLOCK_SIZE] = {0};
   double block_f64[BLOCK_SIZE][BLOCK_SIZE];
 
   // decode DC: F.2.2.1
-  uint16_t n_bits = decode(f, dc_table, &decoder->is_restart);
-  if (decoder->is_restart)
-    return;
-  uint16_t value = receive(f, n_bits, &decoder->is_restart);
-  if (decoder->is_restart)
-    return;
+  uint16_t n_bits = decode(f, dc_table);
+  uint16_t value = receive(f, n_bits);
   int32_t diff = extend(value, n_bits);
 
   decoder->dc_preds[component_id] += diff;
@@ -618,9 +600,7 @@ void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][B
 
   // decode AC: F.2.2.2
   for (int k = 1; k < BLOCK_SIZE * BLOCK_SIZE;) {
-    uint16_t rs = decode(f, ac_table, &decoder->is_restart);
-    if (decoder->is_restart)
-      return;
+    uint16_t rs = decode(f, ac_table);
     if (rs == ZRL)
       k += 16;
     else if (rs == EOB)
@@ -630,9 +610,7 @@ void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][B
       int ssss = lower_half(rs);
       k += rrrr;
       ASSERT(k < BLOCK_SIZE * BLOCK_SIZE, "Encounter invalid code");
-      value = receive(f, ssss, &decoder->is_restart);
-      if (decoder->is_restart)
-        return;
+      value = receive(f, ssss);
       block[k] = extend(value, ssss) * q_table[k];
       k += 1;
     }
