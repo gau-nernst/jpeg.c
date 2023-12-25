@@ -38,14 +38,12 @@ enum MARKER {
 
   // ITU-T.81 Table B.1
   TEM = 0x01,
-
   SOF0 = 0xC0,
   SOF1 = 0xC1,
   SOF2 = 0xC2,
   SOF3 = 0xC3,
 
   DHT = 0xC4,
-
   SOF5 = 0xC5,
   SOF6 = 0xC6,
   SOF7 = 0xC7,
@@ -56,12 +54,18 @@ enum MARKER {
   SOF11 = 0xCB,
 
   DAC = 0xCC,
-
-  SOF13 = 0xC,
-  SOF14 = 0xC,
-  SOF15 = 0xC,
+  SOF13 = 0xCD,
+  SOF14 = 0xCE,
+  SOF15 = 0xCF,
 
   RST0 = 0xD0,
+  RST1 = 0xD1,
+  RST2 = 0xD2,
+  RST3 = 0xD3,
+  RST4 = 0xD4,
+  RST5 = 0xD5,
+  RST6 = 0xD6,
+  RST7 = 0xD7,
 
   SOI = 0xD8,
   EOI = 0xD9,
@@ -178,7 +182,7 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
 
     ASSERT(marker[0] == 0xFF, "Not a marker");
 
-    if (marker[1] == TEM || marker[1] == SOI || marker[1] == EOI || (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
+    if (marker[1] == TEM || marker[1] == SOI || marker[1] == EOI || (marker[1] >= RST0 && marker[1] <= RST7)) {
       buflen = 0;
     } else {
       _FREAD(&buflen, 1, 2, f);
@@ -544,17 +548,13 @@ uint8_t nextbit(FILE *f, bool *is_restart) {
       _FREAD(&B2, 1, 1, f);
 
       if (B2 != 0) {
-        if ((RST0 <= B2) & (B2 < RST0 + 8)) {
+        if ((RST0 <= B2) && (B2 <= RST7)) {
           fprintf(stderr, "Encounter RST%d marker\n", B2 - RST0);
           CNT = 0;
           *is_restart = true;
           return 0;
         } else if (B2 == DNL) {
           ASSERT(false, "DNL marker. Not implemented");
-        } else if (B2 == EOI) {
-          fprintf(stderr, "EOI hello\n");
-          *is_restart = true;
-          return 0;
         } else {
           ASSERT(false, "Found marker %X in scan. Decode error?", B2);
         }
@@ -564,7 +564,7 @@ uint8_t nextbit(FILE *f, bool *is_restart) {
 
   uint8_t BIT = B >> 7;
   CNT--;
-  B <<= 1;
+  B = B << 1;
   return BIT;
 }
 
@@ -583,6 +583,8 @@ uint16_t receive(FILE *f, uint16_t n_bits, bool *is_restart) {
 uint16_t decode(FILE *f, HuffmanTable *h_table, bool *is_restart) {
   int i = 0;
   uint16_t CODE = nextbit(f, is_restart);
+  if (*is_restart)
+    return 0;
 
   for (; CODE > h_table->maxcode[i]; i++) {
     CODE = (CODE << 1) + nextbit(f, is_restart);
