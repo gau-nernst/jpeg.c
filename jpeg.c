@@ -441,7 +441,6 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
     for (int mcu_idx = 0; mcu_idx < ny_blocks * nx_blocks;) {
       uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
       decode_block_sof0(decoder, f, block_u8, dc_table_id, ac_table_id, component_id);
-      // fprintf(stderr, "%d ", mcu_idx);
 
       // E.2.4
       // When restart marker is received, ignore current MCU
