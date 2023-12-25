@@ -76,30 +76,23 @@ enum MARKER {
   COM = 0xFE,
 };
 
-static bool ERROR = false;
-static const char *ERROR_MSG = NULL;
-
-static bool assert(bool condition, const char *msg) {
-  if (!condition) {
-    ERROR = true;
-    ERROR_MSG = msg;
-    fprintf(stderr, "%s", msg);
-    raise(SIGABRT);
+#define ASSERT(condition, ...)                                                                                         \
+  if (!(condition)) {                                                                                                  \
+    fprintf(stderr, "Line %d: ", __LINE__);                                                                            \
+    fprintf(stderr, __VA_ARGS__);                                                                                      \
+    fprintf(stderr, "\n");                                                                                             \
+    raise(SIGABRT);                                                                                                    \
   }
-  return condition;
-}
 
-static void *try_malloc(size_t size) {
-  void *ptr = malloc(size);
-  assert(ptr != NULL, "Failed to allocate memory");
-  return ptr;
-}
+#define _MALLOC(ptr, size)                                                                                             \
+  ptr = malloc(size);                                                                                                  \
+  ASSERT(ptr != NULL, "Failed to allocate memory");
 
-static bool try_fread(void *buffer, size_t size, size_t count, FILE *stream) {
-  size_t n_elems = fread(buffer, size, count, stream);
-  assert(n_elems == count, "Failed to read data. Perhaps EOF?");
-  return n_elems;
-}
+#define _FREAD(buffer, size, count, stream)                                                                            \
+  {                                                                                                                    \
+    size_t n_elems = fread(buffer, size, count, stream);                                                               \
+    ASSERT(n_elems == count, "Failed to read data. Perhaps EOF?");                                                     \
+  }
 
 typedef struct HuffmanTable {
   uint8_t *huffsize;
@@ -180,20 +173,20 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
 
   bool finished = false;
   while (!finished) {
-    try_fread(marker, 1, 2, f);
+    _FREAD(marker, 1, 2, f);
     fprintf(stderr, "%X%X ", marker[0], marker[1]);
 
-    assert(marker[0] == 0xFF, "Not a marker");
+    ASSERT(marker[0] == 0xFF, "Not a marker");
 
-    if (marker[1] == TEM | marker[1] == SOI | marker[1] == EOI | (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
+    if (marker[1] == TEM || marker[1] == SOI || marker[1] == EOI || (marker[1] >= RST0 & marker[1] < RST0 + 8)) {
       buflen = 0;
     } else {
-      try_fread(&buflen, 1, 2, f);
+      _FREAD(&buflen, 1, 2, f);
       buflen = read_be_16((uint8_t *)&buflen) - 2;
 
       // TODO: re-use payload buffer
-      buffer = try_malloc(buflen);
-      try_fread(buffer, 1, buflen, f);
+      _MALLOC(buffer, buflen);
+      _FREAD(buffer, 1, buflen, f);
     }
 
     switch (marker[1]) {
@@ -219,11 +212,13 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
 
     case SOS:
       handle_sos(&decoder, buffer, buflen, f);
+      if (decoder.is_restart)
+        finished = true;
       break;
 
     case DRI:
       fprintf(stderr, "DRI (length = %d)\n", buflen);
-      assert(buflen >= 2, "Payload not long enough");
+      ASSERT(buflen >= 2, "Payload not long enough");
       decoder.restart_interval = read_be_16(buffer);
       fprintf(stderr, "  restart interval = %d\n", decoder.restart_interval);
       break;
@@ -263,7 +258,7 @@ void handle_app0(const uint8_t *buffer, uint16_t buflen) {
   fprintf(stderr, "  identifier = %.5s\n", buffer); // either JFIF or JFXX
 
   if (strcmp((const char *)buffer, "JFIF") == 0) {
-    assert(buflen >= 14, "Payload is too short");
+    ASSERT(buflen >= 14, "Payload is too short");
     fprintf(stderr, "  version = %d.%d\n", buffer[5], buffer[6]);
     fprintf(stderr, "  units = %d\n", buffer[7]);
     fprintf(stderr, "  density = (%d, %d)\n", read_be_16(buffer + 8), read_be_16(buffer + 10));
@@ -286,7 +281,7 @@ void handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
     int table_size = 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1);
 
     fprintf(stderr, "  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
-    assert(buflen >= offset + table_size, "Payload is too short");
+    ASSERT(buflen >= offset + table_size, "Payload is too short");
 
     uint16_t *q_table = decoder->q_tables[identifier];
     if (precision) {
@@ -318,7 +313,7 @@ void handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
     uint8_t class = upper_half(buffer[offset]);
     uint8_t identifier = lower_half(buffer[offset]);
     fprintf(stderr, "  class = %d (%s), identifier = %d\n", class, class ? "AC" : "DC", identifier);
-    assert(buflen >= offset + 1 + MAX_HUFFMAN_CODE_LENGTH, "Payload is too short");
+    ASSERT(buflen >= offset + 1 + MAX_HUFFMAN_CODE_LENGTH, "Payload is too short");
 
     // ITU-T.81 Annex C: create Huffman table
     HuffmanTable *h_table = &decoder->h_tables[class][identifier];
@@ -326,11 +321,11 @@ void handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
     for (int i = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++)
       n_codes += buffer[offset + 1 + i];
     int table_size = 1 + MAX_HUFFMAN_CODE_LENGTH + n_codes;
-    assert(buflen >= offset + table_size, "Payload is too short");
+    ASSERT(buflen >= offset + table_size, "Payload is too short");
 
-    h_table->huffsize = try_malloc(n_codes * sizeof(*h_table->huffsize));
-    h_table->huffcode = try_malloc(n_codes * sizeof(*h_table->huffcode));
-    h_table->huffval = try_malloc(n_codes * sizeof(*h_table->huffval));
+    _MALLOC(h_table->huffsize, n_codes * sizeof(*h_table->huffsize));
+    _MALLOC(h_table->huffcode, n_codes * sizeof(*h_table->huffcode));
+    _MALLOC(h_table->huffval, n_codes * sizeof(*h_table->huffval));
 
     // Figure C.1 and C.2
     for (int i = 0, k = 0, code = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++) {
@@ -373,7 +368,7 @@ void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
   decoder->encoding = SOF0;
 
   // Table B.2
-  assert(buflen >= 6, "Payload is too short");
+  ASSERT(buflen >= 6, "Payload is too short");
   uint8_t precision = buffer[0];
   decoder->height = read_be_16(buffer + 1);
   decoder->width = read_be_16(buffer + 3);
@@ -383,10 +378,10 @@ void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
   fprintf(stderr, "  precision = %d-bit\n", precision);
   fprintf(stderr, "  image dimension = (%d, %d)\n", decoder->width, decoder->height);
 
-  assert(precision == 8, "Only 8-bit image is supported");
-  assert((buffer[5] == 1) | (buffer[5] == 3), "Only 1 or 3 channels are supported");
-  assert(buflen >= 6 + decoder->n_channels * 3, "Payload is too short");
-  decoder->image = try_malloc(decoder->height * decoder->width * decoder->n_channels);
+  ASSERT(precision == 8, "Only 8-bit image is supported");
+  ASSERT((buffer[5] == 1) || (buffer[5] == 3), "Only 1 or 3 channels are supported");
+  ASSERT(buflen >= 6 + decoder->n_channels * 3, "Payload is too short");
+  _MALLOC(decoder->image, decoder->height * decoder->width * decoder->n_channels);
 
   decoder->max_x_sampling = 0;
   decoder->max_y_sampling = 0;
@@ -408,11 +403,11 @@ void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
 void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE *f) {
   fprintf(stderr, "SOS\n");
 
-  assert(decoder->encoding == SOF0, "Only Baseline JPEG is support");
+  ASSERT(decoder->encoding == SOF0, "Only Baseline JPEG is support");
 
   uint8_t n_components = payload[0];
   fprintf(stderr, "  n_components in scan = %d\n", n_components);
-  assert(n_components <= decoder->n_channels, "Scan contains more channels than declared in SOF");
+  ASSERT(n_components <= decoder->n_channels, "Scan contains more channels than declared in SOF");
 
   for (int i = 0; i < n_components; i++)
     fprintf(stderr, "  component %d: DC coding table = %d  AC coding table = %d\n", payload[1 + i * 2],
@@ -437,7 +432,7 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
     int nx_blocks = ceil_div(decoder->width, BLOCK_SIZE);
     int ny_blocks = ceil_div(decoder->height, BLOCK_SIZE);
 
-    for (int mcu_idx = 0; mcu_idx < ny_blocks * nx_blocks;) {
+    for (int mcu_idx = 0; mcu_idx < ny_blocks * nx_blocks; mcu_idx++) {
       uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
       decode_block_sof0(decoder, f, block_u8, dc_table_id, ac_table_id, component_id);
 
@@ -447,7 +442,6 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
       if (decoder->is_restart) {
         decoder->dc_preds[component_id] = 0;
         decoder->is_restart = 0;
-        mcu_idx = ceil_div(mcu_idx, decoder->restart_interval) * decoder->restart_interval;
         continue;
       }
 
@@ -461,8 +455,8 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
           decoder->image[(row_idx * decoder->width + col_idx) * decoder->n_channels + component_id] = block_u8[j][i];
         }
       }
-      mcu_idx++;
     }
+    return;
   }
 
   // Interleaved order. A.2.3
@@ -476,7 +470,8 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
   for (int i = 0; i < MAX_COMPONENTS; i++)
     decoder->dc_preds[i] = 0;
   decoder->is_restart = 0;
-  uint8_t *mcu = try_malloc(mcu_width * mcu_height * n_components);
+  uint8_t *mcu;
+  _MALLOC(mcu, mcu_width * mcu_height * n_components);
 
   for (int mcu_y = 0; mcu_y < ny_mcu; mcu_y++)
     for (int mcu_x = 0; mcu_x < nx_mcu; mcu_x++) {
@@ -531,18 +526,14 @@ uint8_t nextbit(FILE *f, bool *is_restart) {
   static uint8_t CNT = 0, B;
 
   if (CNT == 0) {
-    try_fread(&B, 1, 1, f);
-    if (ERROR)
-      return 0;
+    _FREAD(&B, 1, 1, f);
     CNT = 8;
 
     // potential marker. need to read next byte
     // if next byte is 0x00, ignore this byte (byte stuffing: ITU T.81 F.1.2.3)
     if (B == 0xFF) {
       uint8_t B2;
-      try_fread(&B2, 1, 1, f);
-      if (ERROR)
-        return 0;
+      _FREAD(&B2, 1, 1, f);
 
       if (B2 != 0) {
         if ((RST0 <= B2) & (B2 < RST0 + 8)) {
@@ -551,13 +542,13 @@ uint8_t nextbit(FILE *f, bool *is_restart) {
           *is_restart = true;
           return 0;
         } else if (B2 == DNL) {
-          fprintf(stderr, "DNL marker. Not implemented");
-          ERROR = true;
+          ASSERT(false, "DNL marker. Not implemented");
+        } else if (B2 == EOI) {
+          fprintf(stderr, "EOI hello\n");
+          *is_restart = true;
           return 0;
         } else {
-          fprintf(stderr, "Found marker %X in scan. Decode error?", B2);
-          ERROR = true;
-          return 0;
+          ASSERT(false, "Found marker %X in scan. Decode error?", B2);
         }
       }
     }
@@ -571,29 +562,27 @@ uint8_t nextbit(FILE *f, bool *is_restart) {
 
 // Figure F.17
 uint16_t receive(FILE *f, uint16_t n_bits, bool *is_restart) {
-  uint16_t v = 0;
+  uint16_t V = 0;
   for (int i = 0; i < n_bits; i++) {
-    v = (v << 1) + nextbit(f, is_restart);
-    if (*is_restart | ERROR)
+    V = (V << 1) + nextbit(f, is_restart);
+    if (*is_restart)
       return 0;
   }
-  return v;
+  return V;
 }
 
 // Figure F.16
 uint16_t decode(FILE *f, HuffmanTable *h_table, bool *is_restart) {
-  uint16_t i = 0, code = 0;
+  int i = 0;
+  uint16_t CODE = nextbit(f, is_restart);
 
-  for (;;) {
-    code = (code << 1) + nextbit(f, is_restart);
-    if (*is_restart | ERROR)
+  for (; CODE > h_table->maxcode[i]; i++) {
+    CODE = (CODE << 1) + nextbit(f, is_restart);
+    if (*is_restart)
       return 0;
-    if (code <= h_table->maxcode[i])
-      break;
-    i++;
   }
 
-  return h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
+  return h_table->huffval[h_table->valptr[i] + CODE - h_table->mincode[i]];
 }
 
 void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int dc_table_id,
@@ -608,10 +597,10 @@ void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][B
 
   // decode DC: F.2.2.1
   uint16_t n_bits = decode(f, dc_table, &decoder->is_restart);
-  if (decoder->is_restart | ERROR)
+  if (decoder->is_restart)
     return;
   uint16_t value = receive(f, n_bits, &decoder->is_restart);
-  if (decoder->is_restart | ERROR)
+  if (decoder->is_restart)
     return;
   int32_t diff = extend(value, n_bits);
 
@@ -621,7 +610,7 @@ void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][B
   // decode AC: F.2.2.2
   for (int k = 1; k < BLOCK_SIZE * BLOCK_SIZE;) {
     uint16_t rs = decode(f, ac_table, &decoder->is_restart);
-    if (decoder->is_restart | ERROR)
+    if (decoder->is_restart)
       return;
     if (rs == ZRL)
       k += 16;
@@ -631,9 +620,9 @@ void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][B
       int rrrr = upper_half(rs);
       int ssss = lower_half(rs);
       k += rrrr;
-      assert(k < BLOCK_SIZE * BLOCK_SIZE, "Encounter invalid code");
+      ASSERT(k < BLOCK_SIZE * BLOCK_SIZE, "Encounter invalid code");
       value = receive(f, ssss, &decoder->is_restart);
-      if (decoder->is_restart | ERROR)
+      if (decoder->is_restart)
         return;
       block[k] = extend(value, ssss) * q_table[k];
       k += 1;
