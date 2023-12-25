@@ -2,6 +2,10 @@
 
 C port of https://github.com/gau-nernst/jpeg-python
 
+JPEG specs
+- https://www.w3.org/Graphics/JPEG/itu-t81.pdf
+- https://www.w3.org/Graphics/JPEG/jfif3.pdf
+
 Only JPEG Baseline is implemented. Basic support for restart markers.
 
 Some test images: https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/A_2_1-BF-01.htm
