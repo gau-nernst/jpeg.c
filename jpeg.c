@@ -419,9 +419,11 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
   fprintf(stderr, "  n_components in scan = %d\n", n_components);
   ASSERT(n_components <= decoder->n_channels, "Scan contains more channels than declared in SOF");
 
-  for (int i = 0; i < n_components; i++)
+  for (int i = 0; i < n_components; i++) {
     fprintf(stderr, "  component %d: DC coding table = %d  AC coding table = %d\n", payload[1 + i * 2],
             upper_half(payload[2 + i * 2]), lower_half(payload[2 + i * 2]));
+    ASSERT(payload[1 + i * 2] - decoder->min_component < decoder->n_channels, "Encounter invalid component_id");
+  }
 
   // not used by Baseline DCT
   fprintf(stderr, "  ss = %d\n", payload[1 + n_components * 2]);
@@ -432,6 +434,7 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
   if (n_components == 1) {
     // Non-interleaved order. A.2.2
     int component_id = payload[1] - decoder->min_component;
+    ASSERT(component_id < decoder->n_channels, "Encounter invalid component_id");
     int dc_table_id = upper_half(payload[2]);
     int ac_table_id = lower_half(payload[2]);
 
