@@ -125,7 +125,7 @@ typedef struct Decoder {
   int max_x_sampling;
   int max_y_sampling;
   int dc_preds[MAX_COMPONENTS];
-  int is_restart;
+  bool is_restart;
   uint8_t *image;
   int width;
   int height;
@@ -526,7 +526,7 @@ int32_t extend(uint16_t value, uint16_t n_bits) {
 }
 
 // Figure F.18
-uint8_t nextbit(Decoder *decoder, FILE *f) {
+uint8_t nextbit(FILE *f, bool *is_restart) {
   // impure function
   static uint8_t CNT = 0, B;
 
@@ -548,7 +548,7 @@ uint8_t nextbit(Decoder *decoder, FILE *f) {
         if ((RST0 <= B2) & (B2 < RST0 + 8)) {
           fprintf(stderr, "Encounter RST%d marker\n", B2 - RST0);
           CNT = 0;
-          decoder->is_restart = 1;
+          *is_restart = true;
           return 0;
         } else if (B2 == DNL) {
           fprintf(stderr, "DNL marker. Not implemented");
@@ -570,31 +570,30 @@ uint8_t nextbit(Decoder *decoder, FILE *f) {
 }
 
 // Figure F.17
-int receive(Decoder *decoder, FILE *f, uint16_t ssss, uint16_t *out) {
+uint16_t receive(FILE *f, uint16_t n_bits, bool *is_restart) {
   uint16_t v = 0;
-  for (int i = 0; i < ssss; i++) {
-    v = (v << 1) + nextbit(decoder, f);
-    if (decoder->is_restart | ERROR)
+  for (int i = 0; i < n_bits; i++) {
+    v = (v << 1) + nextbit(f, is_restart);
+    if (*is_restart | ERROR)
       return 0;
   }
-  *out = v;
-  return 0;
+  return v;
 }
 
 // Figure F.16
-int decode(Decoder *decoder, FILE *f, HuffmanTable *h_table, uint16_t *out) {
-  int i = -1;
-  uint16_t code = nextbit(decoder, f);
-  if (decoder->is_restart)
-    return 0;
+uint16_t decode(FILE *f, HuffmanTable *h_table, bool *is_restart) {
+  uint16_t i = 0, code = 0;
 
-  while (code > h_table->maxcode[++i]) {
-    code = (code << 1) + nextbit(decoder, f);
-    if (decoder->is_restart)
+  for (;;) {
+    code = (code << 1) + nextbit(f, is_restart);
+    if (*is_restart | ERROR)
       return 0;
+    if (code <= h_table->maxcode[i])
+      break;
+    i++;
   }
-  *out = h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
-  return 0;
+
+  return h_table->huffval[h_table->valptr[i] + code - h_table->mincode[i]];
 }
 
 void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE], int dc_table_id,
@@ -608,12 +607,11 @@ void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][B
   double block_f64[BLOCK_SIZE][BLOCK_SIZE];
 
   // decode DC: F.2.2.1
-  uint16_t n_bits, value;
-  assert(decode(decoder, f, dc_table, &n_bits) == 0, "Error");
-  if (decoder->is_restart)
+  uint16_t n_bits = decode(f, dc_table, &decoder->is_restart);
+  if (decoder->is_restart | ERROR)
     return;
-  assert(receive(decoder, f, n_bits, &value) == 0, "Error");
-  if (decoder->is_restart)
+  uint16_t value = receive(f, n_bits, &decoder->is_restart);
+  if (decoder->is_restart | ERROR)
     return;
   int32_t diff = extend(value, n_bits);
 
@@ -622,9 +620,8 @@ void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][B
 
   // decode AC: F.2.2.2
   for (int k = 1; k < BLOCK_SIZE * BLOCK_SIZE;) {
-    uint16_t rs;
-    assert(decode(decoder, f, ac_table, &rs) == 0, "Error");
-    if (decoder->is_restart)
+    uint16_t rs = decode(f, ac_table, &decoder->is_restart);
+    if (decoder->is_restart | ERROR)
       return;
     if (rs == ZRL)
       k += 16;
@@ -635,8 +632,8 @@ void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][B
       int ssss = lower_half(rs);
       k += rrrr;
       assert(k < BLOCK_SIZE * BLOCK_SIZE, "Encounter invalid code");
-      assert(receive(decoder, f, ssss, &value) == 0, "Error");
-      if (decoder->is_restart)
+      value = receive(f, ssss, &decoder->is_restart);
+      if (decoder->is_restart | ERROR)
         return;
       block[k] = extend(value, ssss) * q_table[k];
       k += 1;
