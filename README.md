@@ -1,7 +1,5 @@
 # jpeg.c
 
-C port of https://github.com/gau-nernst/jpeg-python
-
 JPEG specs
 - https://www.w3.org/Graphics/JPEG/itu-t81.pdf
 - https://www.w3.org/Graphics/JPEG/jfif3.pdf
