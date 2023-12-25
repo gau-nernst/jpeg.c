@@ -26,7 +26,7 @@
   }
 
 // https://stackoverflow.com/a/2745086
-#define ceil_div(x, y) (((x)-1) / (y) + 1)
+#define ceil_div(x, y) (((x) + (y)-1) / (y))
 #define max(x, y) (((x) > (y)) ? (x) : (y))
 #define min(x, y) (((x) < (y)) ? (x) : (y))
 #define clip(x, lower, higher) min(max(x, lower), higher)
@@ -395,8 +395,8 @@ void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
     decoder->max_x_sampling = max(decoder->max_x_sampling, component->x_sampling);
     decoder->max_y_sampling = max(decoder->max_y_sampling, component->y_sampling);
 
-    fprintf(stderr, "  component %d: sampling_factor = (%d, %d)  q_table_id = %d\n", component_id,
-            component->x_sampling, component->y_sampling, component->q_table_id);
+    fprintf(stderr, "  component %d: sampling_factor = (%d, %d) q_table_id = %d\n", component_id, component->x_sampling,
+            component->y_sampling, component->q_table_id);
   }
 }
 
@@ -426,35 +426,43 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
     int ac_table_id = lower_half(payload[2]);
 
     decoder->dc_preds[component_id] = 0;
-    decoder->is_restart = 0;
+    decoder->is_restart = false;
 
     // TODO: take into account sampling factor
     int nx_blocks = ceil_div(decoder->width, BLOCK_SIZE);
     int ny_blocks = ceil_div(decoder->height, BLOCK_SIZE);
 
-    for (int mcu_idx = 0; mcu_idx < ny_blocks * nx_blocks; mcu_idx++) {
+    int interval_idx = 0;
+
+    for (int mcu_idx = 0; mcu_idx < ny_blocks * nx_blocks;) {
       uint8_t block_u8[BLOCK_SIZE][BLOCK_SIZE];
       decode_block_sof0(decoder, f, block_u8, dc_table_id, ac_table_id, component_id);
+      // fprintf(stderr, "%d ", mcu_idx);
 
       // E.2.4
-      // When restart marker is received, ignore current MCU. Reset decoder state and move on to the next MCU
+      // When restart marker is received, ignore current MCU
+      // reset decoder state, move to the next interval
       // NOTE: we don't check for consecutive restart markers
       if (decoder->is_restart) {
         decoder->dc_preds[component_id] = 0;
-        decoder->is_restart = 0;
+        decoder->is_restart = false;
+        mcu_idx = (++interval_idx) * decoder->restart_interval;
         continue;
       }
 
       // place mcu to image buffer
-      int y = mcu_idx / nx_blocks;
-      int x = mcu_idx % nx_blocks;
-      for (int j = 0; j < min(BLOCK_SIZE, decoder->height - y * BLOCK_SIZE); j++) {
-        int row_idx = y * BLOCK_SIZE + j;
-        for (int i = 0; i < min(BLOCK_SIZE, decoder->width - x * BLOCK_SIZE); i++) {
-          int col_idx = x * BLOCK_SIZE + i;
-          decoder->image[(row_idx * decoder->width + col_idx) * decoder->n_channels + component_id] = block_u8[j][i];
+      int mcu_y = mcu_idx / nx_blocks;
+      int mcu_x = mcu_idx % nx_blocks;
+      for (int j = 0; j < min(BLOCK_SIZE, decoder->height - mcu_y * BLOCK_SIZE); j++) {
+        int row_idx = mcu_y * BLOCK_SIZE + j;
+        for (int i = 0; i < min(BLOCK_SIZE, decoder->width - mcu_x * BLOCK_SIZE); i++) {
+          int col_idx = mcu_x * BLOCK_SIZE + i;
+          decoder->image[(row_idx * decoder->width + col_idx) * decoder->n_channels + component_id - 1] =
+              block_u8[j][i];
         }
       }
+
+      mcu_idx++;
     }
     return;
   }
