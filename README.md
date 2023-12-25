@@ -27,6 +27,8 @@ cl test.c jpeg.c && ./test sample.jpg
 
 ## Decode flow
 
+Check Figure E6-E10 of ITU-T.81
+
 Most basic: Baseline JPEG, no restart
 
 ```mermaid
