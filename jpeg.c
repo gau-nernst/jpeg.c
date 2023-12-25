@@ -137,13 +137,13 @@ static uint8_t upper_half(uint8_t x) { return x >> 4; }
 static uint8_t lower_half(uint8_t x) { return x & 0xF; }
 
 static void handle_app0(const uint8_t *buffer, uint16_t buflen);
-static int handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen);
-static int handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen);
-static int handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen);
-static int handle_sos(Decoder *decoder, const uint8_t *buffer, uint16_t buflen, FILE *f);
+static void handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen);
+static void handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen);
+static void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen);
+static void handle_sos(Decoder *decoder, const uint8_t *buffer, uint16_t buflen, FILE *f);
 
-static int sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block[DATA_UNIT_SIZE][DATA_UNIT_SIZE], int, int,
-                                 int);
+static void sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block[DATA_UNIT_SIZE][DATA_UNIT_SIZE], int, int,
+                                  int);
 
 static void idct_2d_(double *);
 static void ycbcr_to_rgb_(uint8_t *);
@@ -209,20 +209,17 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
 
     case DQT:
       fprintf(stderr, "DQT (length = %d)\n", buflen);
-      if (handle_dqt(&decoder, buffer, buflen))
-        return 0;
+      handle_dqt(&decoder, buffer, buflen);
       break;
 
     case DHT:
       fprintf(stderr, "DHT (length = %d)\n", buflen);
-      if (handle_dht(&decoder, buffer, buflen))
-        return 0;
+      handle_dht(&decoder, buffer, buflen);
       break;
 
     case SOF0:
       fprintf(stderr, "SOF0 (length = %d)\n", buflen);
-      if (handle_sof0(&decoder, buffer, buflen))
-        return 0;
+      handle_sof0(&decoder, buffer, buflen);
       break;
 
     case DRI:
@@ -234,8 +231,7 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
 
     case SOS:
       fprintf(stderr, "SOS\n");
-      if (handle_sos(&decoder, buffer, buflen, f))
-        return 0;
+      handle_sos(&decoder, buffer, buflen, f);
       break;
 
     case EOI:
@@ -285,13 +281,15 @@ void handle_app0(const uint8_t *buffer, uint16_t buflen) {
 
 // ITU-T.81 B.2.4.1
 // there can be multiple quantization tables within 1 DQT segment
-int handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
+void handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
   int offset = 0;
   while (offset < buflen) {
     uint8_t precision = upper_half(buffer[offset]);
     uint8_t identifier = lower_half(buffer[offset]);
+    int table_size = 1 + DATA_UNIT_SIZE * DATA_UNIT_SIZE * (precision + 1);
+
     fprintf(stderr, "  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
-    assert(buflen >= offset + 1 + DATA_UNIT_SIZE * DATA_UNIT_SIZE * (precision + 1), "Payload is too short");
+    assert(buflen >= offset + table_size, "Payload is too short");
 
     uint16_t *q_table = decoder->q_tables[identifier];
     if (precision) {
@@ -309,14 +307,13 @@ int handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
       fprintf(stderr, "\n");
     }
 
-    offset += 1 + DATA_UNIT_SIZE * DATA_UNIT_SIZE * (precision + 1);
+    offset += table_size;
   }
-  return 0;
 }
 
 // ITU-T.81 B.2.4.2
 // there can be multiple huffman tables within 1 DHT segment
-int handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
+void handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
   int offset = 0;
   while (offset < buflen) {
     uint8_t class = upper_half(buffer[offset]);
@@ -329,7 +326,8 @@ int handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
     int n_codes = 0;
     for (int i = 0; i < MAX_HUFFMAN_CODE_LENGTH; i++)
       n_codes += buffer[offset + 1 + i];
-    assert(buflen >= offset + 1 + MAX_HUFFMAN_CODE_LENGTH + n_codes, "Payload is too short");
+    int table_size = 1 + MAX_HUFFMAN_CODE_LENGTH + n_codes;
+    assert(buflen >= offset + table_size, "Payload is too short");
 
     h_table->huffsize = try_malloc(n_codes * sizeof(*h_table->huffsize));
     h_table->huffcode = try_malloc(n_codes * sizeof(*h_table->huffcode));
@@ -366,12 +364,11 @@ int handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
     print_list("  VALPTR   =", h_table->valptr, MAX_HUFFMAN_CODE_LENGTH, " %3d");
     fprintf(stderr, "\n");
 
-    offset += 1 + MAX_HUFFMAN_CODE_LENGTH + n_codes;
+    offset += table_size;
   }
-  return 0;
 }
 
-int handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
+void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
   decoder->encoding = SOF0;
 
   // Table B.2
@@ -385,7 +382,6 @@ int handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
   fprintf(stderr, "  precision = %d-bit\n", precision);
   fprintf(stderr, "  image dimension = (%d, %d)\n", decoder->width, decoder->height);
 
-  // TODO: check if image->data is allocated?
   assert(precision == 8, "Only 8-bit image is supported");
   assert((buffer[5] == 1) | (buffer[5] == 3), "Only 1 or 3 channels are supported");
   assert(buflen >= 6 + decoder->n_channels * 3, "Payload is too short");
@@ -406,11 +402,9 @@ int handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
     fprintf(stderr, "  component %d: sampling_factor = (%d, %d)  q_table_id = %d\n", component_id,
             component->x_sampling, component->y_sampling, component->q_table_id);
   }
-
-  return 0;
 }
 
-int handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE *f) {
+void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE *f) {
   assert(decoder->encoding == SOF0, "Only Baseline JPEG is support");
 
   uint8_t n_components = payload[0];
@@ -443,7 +437,7 @@ int handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE *
 
     for (int mcu_idx = 0; mcu_idx < ny_blocks * nx_blocks;) {
       uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
-      assert(sof0_decode_data_unit(decoder, f, block_u8, dc_table_id, ac_table_id, component_id) == 0, "Error");
+      sof0_decode_data_unit(decoder, f, block_u8, dc_table_id, ac_table_id, component_id);
 
       // E.2.4
       // When restart marker is received, ignore current MCU. Reset decoder state and move on to the next MCU
@@ -467,7 +461,6 @@ int handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE *
       }
       mcu_idx++;
     }
-    return 0;
   }
 
   // Interleaved order. A.2.3
@@ -494,7 +487,7 @@ int handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE *
         for (int y = 0; y < component->y_sampling; y++)
           for (int x = 0; x < component->x_sampling; x++) {
             uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE];
-            assert(sof0_decode_data_unit(decoder, f, block_u8, dc_table_id, ac_table_id, component_id) == 0, "Error");
+            sof0_decode_data_unit(decoder, f, block_u8, dc_table_id, ac_table_id, component_id);
 
             // place to mcu. A.2.3 and JFIF p.4
             // NOTE: assume order in the scan is YCbCr
@@ -523,7 +516,6 @@ int handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE *
         }
       }
     }
-  return 0;
 }
 
 // Figure F.12
@@ -532,7 +524,7 @@ int32_t extend(uint16_t value, uint16_t n_bits) {
 }
 
 // Figure F.18
-int nextbit(FILE *f, uint16_t *out, Decoder *decoder_state) {
+int nextbit(Decoder *decoder, FILE *f, uint16_t *out) {
   // impure function
   static uint8_t b, cnt = 0;
 
@@ -548,7 +540,7 @@ int nextbit(FILE *f, uint16_t *out, Decoder *decoder_state) {
         if ((RST0 <= b2) & (b2 < RST0 + 8)) {
           fprintf(stderr, "Encounter RST%d marker\n", b2 - RST0);
           cnt = 0;
-          decoder_state->is_restart = 1;
+          decoder->is_restart = 1;
           return 0;
         } else if (b2 == DNL) {
           fprintf(stderr, "DNL marker. Not implemented\n");
@@ -565,11 +557,11 @@ int nextbit(FILE *f, uint16_t *out, Decoder *decoder_state) {
 }
 
 // Figure F.17
-int receive(FILE *f, uint16_t ssss, uint16_t *out, Decoder *decoder_state) {
+int receive(Decoder *decoder, FILE *f, uint16_t ssss, uint16_t *out) {
   uint16_t v = 0, temp;
   for (int i = 0; i < ssss; i++) {
-    assert(nextbit(f, &temp, decoder_state) == 0, "Error");
-    if (decoder_state->is_restart)
+    assert(nextbit(decoder, f, &temp) == 0, "Error");
+    if (decoder->is_restart)
       return 0;
     v = (v << 1) + temp;
   }
@@ -578,16 +570,16 @@ int receive(FILE *f, uint16_t ssss, uint16_t *out, Decoder *decoder_state) {
 }
 
 // Figure F.16
-int decode(FILE *f, HuffmanTable *h_table, uint16_t *out, Decoder *decoder_state) {
+int decode(Decoder *decoder, FILE *f, HuffmanTable *h_table, uint16_t *out) {
   int i = -1;
   uint16_t code, temp;
-  assert(nextbit(f, &code, decoder_state) == 0, "Error");
-  if (decoder_state->is_restart)
+  assert(nextbit(decoder, f, &code) == 0, "Error");
+  if (decoder->is_restart)
     return 0;
 
   while (code > h_table->maxcode[++i]) {
-    assert(nextbit(f, &temp, decoder_state) == 0, "Error");
-    if (decoder_state->is_restart)
+    assert(nextbit(decoder, f, &temp) == 0, "Error");
+    if (decoder->is_restart)
       return 0;
     code = (code << 1) + temp;
   }
@@ -595,8 +587,8 @@ int decode(FILE *f, HuffmanTable *h_table, uint16_t *out, Decoder *decoder_state
   return 0;
 }
 
-int sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE], int dc_table_id,
-                          int ac_table_id, int component_id) {
+void sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block_u8[DATA_UNIT_SIZE][DATA_UNIT_SIZE], int dc_table_id,
+                           int ac_table_id, int component_id) {
   HuffmanTable *dc_table = &decoder->h_tables[0][dc_table_id];
   HuffmanTable *ac_table = &decoder->h_tables[1][ac_table_id];
   uint16_t *q_table = decoder->q_tables[decoder->components[component_id].q_table_id];
@@ -608,12 +600,12 @@ int sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block_u8[DATA_UNIT_
 
   // decode DC: F.2.2.1
   uint16_t n_bits, value;
-  assert(decode(f, dc_table, &n_bits, decoder) == 0, "Error");
+  assert(decode(decoder, f, dc_table, &n_bits) == 0, "Error");
   if (decoder->is_restart)
-    return 0;
-  assert(receive(f, n_bits, &value, decoder) == 0, "Error");
+    return;
+  assert(receive(decoder, f, n_bits, &value) == 0, "Error");
   if (decoder->is_restart)
-    return 0;
+    return;
   int32_t diff = extend(value, n_bits);
 
   decoder->dc_preds[component_id] += diff;
@@ -622,9 +614,9 @@ int sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block_u8[DATA_UNIT_
   // decode AC: F.2.2.2
   for (int k = 1; k < DATA_UNIT_SIZE * DATA_UNIT_SIZE;) {
     uint16_t rs;
-    assert(decode(f, ac_table, &rs, decoder) == 0, "Error");
+    assert(decode(decoder, f, ac_table, &rs) == 0, "Error");
     if (decoder->is_restart)
-      return 0;
+      return;
     if (rs == ZRL)
       k += 16;
     else if (rs == EOB)
@@ -634,9 +626,9 @@ int sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block_u8[DATA_UNIT_
       int ssss = lower_half(rs);
       k += rrrr;
       assert(k < DATA_UNIT_SIZE * DATA_UNIT_SIZE, "Encounter invalid code");
-      assert(receive(f, ssss, &value, decoder) == 0, "Error");
+      assert(receive(decoder, f, ssss, &value) == 0, "Error");
       if (decoder->is_restart)
-        return 0;
+        return;
       block[k] = extend(value, ssss) * q_table[k];
       k += 1;
     }
@@ -653,8 +645,6 @@ int sof0_decode_data_unit(Decoder *decoder, FILE *f, uint8_t block_u8[DATA_UNIT_
   for (int i = 0; i < DATA_UNIT_SIZE; i++)
     for (int j = 0; j < DATA_UNIT_SIZE; j++)
       block_u8[i][j] = clip(round(block_f64[i][j]) + 128, 0, 255);
-
-  return 0;
 }
 
 void idct_1d(double *x, double *out, size_t offset, size_t stride) {
