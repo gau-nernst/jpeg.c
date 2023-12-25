@@ -37,6 +37,6 @@ graph LR
   SOF-->SOS
   SOS-->EOI
 
-  Metadata["Metadata\n(e.g. APP1 - JFIF, Exif)"]
+  Metadata["Metadata\n(e.g. APP0 - JFIF, Exif)"]
   Tables["Tables\n(Huffman and Quantization)"]
 ```
