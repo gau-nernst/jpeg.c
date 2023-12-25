@@ -11,6 +11,8 @@ Only JPEG Baseline is implemented. Basic support for restart markers.
 Some test images: https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/A_2_1-BF-01.htm
 - I cannot get https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg444.jpg decoded correctly. Not sure why.
 
+## Build
+
 Linux and MacOS
 
 ```bash
@@ -21,4 +23,20 @@ Windows
 
 ```bash
 cl test.c jpeg.c && ./test sample.jpg
+```
+
+## Decode flow
+
+Most basic: Baseline JPEG, no restart
+
+```mermaid
+graph LR
+  SOI-->Metadata
+  Metadata-->Tables
+  Tables-->SOF
+  SOF-->SOS
+  SOS-->EOI
+
+  Metadata["Metadata\n(e.g. APP1 - JFIF, Exif)"]
+  Tables["Tables\n(Huffman and Quantization)"]
 ```
