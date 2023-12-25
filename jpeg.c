@@ -203,23 +203,23 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
       break;
 
     case APP0:
-      fprintf(stderr, "APP0 (length = %d)\n", buflen);
       handle_app0(buffer, buflen);
       break;
 
     case DQT:
-      fprintf(stderr, "DQT (length = %d)\n", buflen);
       handle_dqt(&decoder, buffer, buflen);
       break;
 
     case DHT:
-      fprintf(stderr, "DHT (length = %d)\n", buflen);
       handle_dht(&decoder, buffer, buflen);
       break;
 
     case SOF0:
-      fprintf(stderr, "SOF0 (length = %d)\n", buflen);
       handle_sof0(&decoder, buffer, buflen);
+      break;
+
+    case SOS:
+      handle_sos(&decoder, buffer, buflen, f);
       break;
 
     case DRI:
@@ -227,11 +227,6 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
       assert(buflen >= 2, "Payload not long enough");
       decoder.restart_interval = read_be_16(buffer);
       fprintf(stderr, "  restart interval = %d\n", decoder.restart_interval);
-      break;
-
-    case SOS:
-      fprintf(stderr, "SOS\n");
-      handle_sos(&decoder, buffer, buflen, f);
       break;
 
     case EOI:
@@ -265,6 +260,7 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
 
 // JFIF i.e. JPEG Part 5
 void handle_app0(const uint8_t *buffer, uint16_t buflen) {
+  fprintf(stderr, "APP0 (length = %d)\n", buflen);
   fprintf(stderr, "  identifier = %.5s\n", buffer); // either JFIF or JFXX
 
   if (strcmp((const char *)buffer, "JFIF") == 0) {
@@ -282,6 +278,8 @@ void handle_app0(const uint8_t *buffer, uint16_t buflen) {
 // ITU-T.81 B.2.4.1
 // there can be multiple quantization tables within 1 DQT segment
 void handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
+  fprintf(stderr, "DQT (length = %d)\n", buflen);
+
   int offset = 0;
   while (offset < buflen) {
     uint8_t precision = upper_half(buffer[offset]);
@@ -314,6 +312,8 @@ void handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
 // ITU-T.81 B.2.4.2
 // there can be multiple huffman tables within 1 DHT segment
 void handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
+  fprintf(stderr, "DHT (length = %d)\n", buflen);
+
   int offset = 0;
   while (offset < buflen) {
     uint8_t class = upper_half(buffer[offset]);
@@ -369,6 +369,8 @@ void handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
 }
 
 void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
+  fprintf(stderr, "SOF0 (length = %d)\n", buflen);
+
   decoder->encoding = SOF0;
 
   // Table B.2
@@ -405,6 +407,8 @@ void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
 }
 
 void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE *f) {
+  fprintf(stderr, "SOS\n");
+
   assert(decoder->encoding == SOF0, "Only Baseline JPEG is support");
 
   uint8_t n_components = payload[0];
