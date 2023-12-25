@@ -10,7 +10,7 @@
 
 #define BLOCK_SIZE 8
 #define MAX_HUFFMAN_CODE_LENGTH 16
-#define MAX_COMPONENTS 4
+#define MAX_COMPONENTS 3
 
 #define ASSERT(condition, ...)                                                                                         \
   if (!(condition)) {                                                                                                  \
@@ -120,6 +120,7 @@ typedef struct Decoder {
   uint16_t q_tables[4][BLOCK_SIZE * BLOCK_SIZE];
   HuffmanTable h_tables[2][4];
   Component components[MAX_COMPONENTS];
+  int min_component;
   int max_x_sampling;
   int max_y_sampling;
   int dc_preds[MAX_COMPONENTS];
@@ -233,9 +234,9 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
       break;
 
     default:
-      if ((APP0 < marker[1]) & (marker[1] <= APP0 + 15)) {
+      if ((APP0 < marker[1]) && (marker[1] <= APP0 + 15)) {
         fprintf(stderr, "APP%d (length = %d)\n", marker[1] - APP0, buflen);
-        fprintf(stderr, "  identifier = %s\n", buffer);
+        fprintf(stderr, "  identifier = %.*s\n", buflen, buffer);
       } else
         fprintf(stderr, "Unknown marker (length = %d)\n", buflen);
       break;
@@ -387,11 +388,16 @@ void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
   ASSERT(buflen >= 6 + decoder->n_channels * 3, "Payload is too short");
   _MALLOC(decoder->image, decoder->height * decoder->width * decoder->n_channels);
 
+  // we need to do this since component_id is not consistent. it can be 1, 2, 3 or 0, 1, 2
+  decoder->min_component = buffer[6];
+  for (int i = 1; i < decoder->n_channels; i++)
+    decoder->min_component = min(decoder->min_component, buffer[6 + i * 3]);
+
   decoder->max_x_sampling = 0;
   decoder->max_y_sampling = 0;
   for (int i = 0; i < decoder->n_channels; i++) {
     uint8_t component_id = buffer[6 + i * 3];
-    Component *component = &decoder->components[component_id];
+    Component *component = &decoder->components[component_id - decoder->min_component];
     component->x_sampling = upper_half(buffer[7 + i * 3]);
     component->y_sampling = lower_half(buffer[7 + i * 3]);
     component->q_table_id = buffer[8 + i * 3];
@@ -425,7 +431,7 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
 
   if (n_components == 1) {
     // Non-interleaved order. A.2.2
-    int component_id = payload[1];
+    int component_id = payload[1] - decoder->min_component;
     int dc_table_id = upper_half(payload[2]);
     int ac_table_id = lower_half(payload[2]);
 
@@ -450,8 +456,7 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
           int row_idx = mcu_y * BLOCK_SIZE + j;
           for (int i = 0; i < min(BLOCK_SIZE, decoder->width - mcu_x * BLOCK_SIZE); i++) {
             int col_idx = mcu_x * BLOCK_SIZE + i;
-            decoder->image[(row_idx * decoder->width + col_idx) * decoder->n_channels + component_id - 1] =
-                block_u8[j][i];
+            decoder->image[(row_idx * decoder->width + col_idx) * decoder->n_channels + component_id] = block_u8[j][i];
           }
         }
         mcu_idx++;
@@ -482,7 +487,7 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
   for (int mcu_y = 0; mcu_y < ny_mcu; mcu_y++)
     for (int mcu_x = 0; mcu_x < nx_mcu; mcu_x++) {
       for (int c = 0; c < n_components; c++) {
-        int component_id = payload[1 + c * 2];
+        int component_id = payload[1 + c * 2] - decoder->min_component;
         int dc_table_id = upper_half(payload[2 + c * 2]);
         int ac_table_id = lower_half(payload[2 + c * 2]);
         Component *component = &decoder->components[component_id];
@@ -512,8 +517,8 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
           int col_idx = mcu_x * mcu_width + i;
           ycbcr_to_rgb_(mcu + (j * mcu_width + i) * n_components);
           for (int c = 0; c < n_components; c++) {
-            int channel_id = payload[1 + c * 2] - 1;
-            decoder->image[(row_idx * decoder->width + col_idx) * decoder->n_channels + channel_id] =
+            int component_id = payload[1 + c * 2] - decoder->min_component;
+            decoder->image[(row_idx * decoder->width + col_idx) * decoder->n_channels + component_id] =
                 mcu[(j * mcu_width + i) * n_components + c];
           }
         }
