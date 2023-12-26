@@ -10,6 +10,7 @@ Some test images: https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/A_2_
 
 - In general, to ensure safe decoding, we need to do quite a lot of checks i.e. make sure resources, like Huffman tables, are initialized before use, the values are within expected range (otherwise we might index out of bounds).
 - JPEG/JFIF does not limit the range of values for component identifier. It is 1 byte, so theoretically the possible values are [0, 255]. Most proper JPEGs use 1, 2, 3 for RGB, but a few, like https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/jpeg444.jpg, use 0, 1, 2 instead. Note that the standard says decoders only need to support up to 4 components in a scan (Adobe standard with APP13 or APP14 markers may interpret 4 components as CMYK).
+- The standard does not specify how to reverse chroma-subsampling i.e. upsample subsampled components. A reasonable choice would be a bilinear filter. In this repo, I just repeat the data i.e. nearest neighbor upsampling. Also note on the alignment (JFIF page 4) i.e. point sampling.
 - Many silent bugs in C are due to out of bounds access i.e. buffer overflow. Simply add `-fsanitize=address` to the compiler to check for those bugs.
 
 ## Build
