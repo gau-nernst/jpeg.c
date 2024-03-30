@@ -44,11 +44,10 @@
     fprintf(stderr, "\n");                                                                                             \
   }
 
-// https://stackoverflow.com/a/2745086
-#define ceil_div(x, y) (((x) + (y)-1) / (y))
-#define max(x, y) (((x) > (y)) ? (x) : (y))
-#define min(x, y) (((x) < (y)) ? (x) : (y))
-#define clip(x, lower, higher) min(max(x, lower), higher)
+#define CDIV(x, y) (((x) + (y)-1) / (y))
+#define MAX(x, y) (((x) > (y)) ? (x) : (y))
+#define MIN(x, y) (((x) < (y)) ? (x) : (y))
+#define CLAMP(x, lo, hi) MIN(MAX(x, lo), hi)
 
 enum MARKER {
   // ITU-T.81 F.1.2.2.3
@@ -148,29 +147,27 @@ static void ycbcr_to_rgb_(uint8_t *);
 static jmp_buf RST_JMP_BUF;
 
 // ITU T.81 Figure A.6
-// clang-format off
 static const uint8_t ZIG_ZAG[BLOCK_SIZE][BLOCK_SIZE] = {
-  { 0,  1,  5,  6, 14, 15, 27, 28},
-  { 2,  4,  7, 13, 16, 26, 29, 42},
-  { 3,  8, 12, 17, 25, 30, 41, 43},
-  { 9, 11, 18, 24, 31, 40, 44, 53},
-  {10, 19, 23, 32, 39, 45, 52, 54},
-  {20, 22, 33, 38, 46, 51, 55, 60},
-  {21, 34, 37, 47, 50, 56, 59, 61},
-  {35, 36, 48, 49, 57, 58, 62, 63},
+    { 0,  1,  5,  6, 14, 15, 27, 28}, //
+    { 2,  4,  7, 13, 16, 26, 29, 42}, //
+    { 3,  8, 12, 17, 25, 30, 41, 43}, //
+    { 9, 11, 18, 24, 31, 40, 44, 53}, //
+    {10, 19, 23, 32, 39, 45, 52, 54}, //
+    {20, 22, 33, 38, 46, 51, 55, 60}, //
+    {21, 34, 37, 47, 50, 56, 59, 61}, //
+    {35, 36, 48, 49, 57, 58, 62, 63},
 };
 
 static const double DCT_TABLE[] = {
-   0.5000000000000000,  0.4903926402016152,  0.4619397662556434,  0.4157348061512726,
-   0.3535533905932738,  0.2777851165098011,  0.1913417161825449,  0.0975451610080642,
-   0.0000000000000000, -0.0975451610080641, -0.1913417161825449, -0.2777851165098010,
-  -0.3535533905932737, -0.4157348061512727, -0.4619397662556434, -0.4903926402016152,
-  -0.5000000000000000, -0.4903926402016152, -0.4619397662556434, -0.4157348061512726,
-  -0.3535533905932738, -0.2777851165098011, -0.1913417161825449, -0.0975451610080642,
-  -0.0000000000000000,  0.0975451610080641,  0.1913417161825449,  0.2777851165098010,
-   0.3535533905932737,  0.4157348061512727,  0.4619397662556434,  0.4903926402016152,
+    0.5000000000000000,  0.4903926402016152,  0.4619397662556434,  0.4157348061512726,  //
+    0.3535533905932738,  0.2777851165098011,  0.1913417161825449,  0.0975451610080642,  //
+    0.0000000000000000,  -0.0975451610080641, -0.1913417161825449, -0.2777851165098010, //
+    -0.3535533905932737, -0.4157348061512727, -0.4619397662556434, -0.4903926402016152, //
+    -0.5000000000000000, -0.4903926402016152, -0.4619397662556434, -0.4157348061512726, //
+    -0.3535533905932738, -0.2777851165098011, -0.1913417161825449, -0.0975451610080642, //
+    -0.0000000000000000, 0.0975451610080641,  0.1913417161825449,  0.2777851165098010,  //
+    0.3535533905932737,  0.4157348061512727,  0.4619397662556434,  0.4903926402016152,  //
 };
-// clang-format on
 
 uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
   uint8_t marker[2];
@@ -391,7 +388,7 @@ void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
   // we need to do this since component_id is not consistent. it can be 1, 2, 3 or 0, 1, 2
   decoder->min_component = buffer[6];
   for (int i = 1; i < decoder->n_channels; i++)
-    decoder->min_component = min(decoder->min_component, buffer[6 + i * 3]);
+    decoder->min_component = MIN(decoder->min_component, buffer[6 + i * 3]);
 
   decoder->max_x_sampling = 0;
   decoder->max_y_sampling = 0;
@@ -402,8 +399,8 @@ void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
     component->y_sampling = lower_half(buffer[7 + i * 3]);
     component->q_table_id = buffer[8 + i * 3];
 
-    decoder->max_x_sampling = max(decoder->max_x_sampling, component->x_sampling);
-    decoder->max_y_sampling = max(decoder->max_y_sampling, component->y_sampling);
+    decoder->max_x_sampling = MAX(decoder->max_x_sampling, component->x_sampling);
+    decoder->max_y_sampling = MAX(decoder->max_y_sampling, component->y_sampling);
 
     fprintf(stderr, "  component %d: sampling_factor = (%d, %d) q_table_id = %d\n", component_id, component->x_sampling,
             component->y_sampling, component->q_table_id);
@@ -441,8 +438,8 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
     decoder->dc_preds[component_id] = 0;
 
     // TODO: take into account sampling factor
-    int nx_blocks = ceil_div(decoder->width, BLOCK_SIZE);
-    int ny_blocks = ceil_div(decoder->height, BLOCK_SIZE);
+    int nx_blocks = CDIV(decoder->width, BLOCK_SIZE);
+    int ny_blocks = CDIV(decoder->height, BLOCK_SIZE);
 
     int interval_idx = 0;
 
@@ -455,9 +452,9 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
         // place mcu to image buffer
         int mcu_y = mcu_idx / nx_blocks;
         int mcu_x = mcu_idx % nx_blocks;
-        for (int j = 0; j < min(BLOCK_SIZE, decoder->height - mcu_y * BLOCK_SIZE); j++) {
+        for (int j = 0; j < MIN(BLOCK_SIZE, decoder->height - mcu_y * BLOCK_SIZE); j++) {
           int row_idx = mcu_y * BLOCK_SIZE + j;
-          for (int i = 0; i < min(BLOCK_SIZE, decoder->width - mcu_x * BLOCK_SIZE); i++) {
+          for (int i = 0; i < MIN(BLOCK_SIZE, decoder->width - mcu_x * BLOCK_SIZE); i++) {
             int col_idx = mcu_x * BLOCK_SIZE + i;
             decoder->image[(row_idx * decoder->width + col_idx) * decoder->n_channels + component_id] = block_u8[j][i];
           }
@@ -479,8 +476,8 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
   // TODO: handle restart markers for 3-channel
   int mcu_width = BLOCK_SIZE * decoder->max_x_sampling;
   int mcu_height = BLOCK_SIZE * decoder->max_y_sampling;
-  int nx_mcu = ceil_div(decoder->width, mcu_width);
-  int ny_mcu = ceil_div(decoder->height, mcu_height);
+  int nx_mcu = CDIV(decoder->width, mcu_width);
+  int ny_mcu = CDIV(decoder->height, mcu_height);
 
   for (int i = 0; i < MAX_COMPONENTS; i++)
     decoder->dc_preds[i] = 0;
@@ -502,6 +499,7 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
 
             // place to mcu. A.2.3 and JFIF p.4
             // NOTE: assume order in the scan is YCbCr
+            // TODO: use better upsampling algorithm e.g. bilinear
             int n_repeat_y = decoder->max_y_sampling / component->y_sampling;
             int n_repeat_x = decoder->max_x_sampling / component->x_sampling;
             for (int j = 0; j < BLOCK_SIZE * n_repeat_y; j++) {
@@ -514,9 +512,9 @@ void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE 
           }
       }
 
-      for (int j = 0; j < min(mcu_height, decoder->height - mcu_y * mcu_height); j++) {
+      for (int j = 0; j < MIN(mcu_height, decoder->height - mcu_y * mcu_height); j++) {
         int row_idx = mcu_y * mcu_height + j;
-        for (int i = 0; i < min(mcu_width, decoder->width - mcu_x * mcu_width); i++) {
+        for (int i = 0; i < MIN(mcu_width, decoder->width - mcu_x * mcu_width); i++) {
           int col_idx = mcu_x * mcu_width + i;
           ycbcr_to_rgb_(mcu + (j * mcu_width + i) * n_components);
           for (int c = 0; c < n_components; c++) {
@@ -634,7 +632,7 @@ void decode_block_sof0(Decoder *decoder, FILE *f, uint8_t block_u8[BLOCK_SIZE][B
   // level shift and rounding. A.3.1
   for (int i = 0; i < BLOCK_SIZE; i++)
     for (int j = 0; j < BLOCK_SIZE; j++)
-      block_u8[i][j] = clip(round(block_f64[i][j]) + 128, 0, 255);
+      block_u8[i][j] = CLAMP(round(block_f64[i][j]) + 128, 0, 255);
 }
 
 void idct_1d(double *x, double *out, size_t offset, size_t stride) {
@@ -661,7 +659,7 @@ void ycbcr_to_rgb_(uint8_t *x) {
   float g = x[0] - 0.34414f * (x[1] - 128) - 0.71414f * (x[2] - 128);
   float b = x[0] + 1.772f   * (x[1] - 128);
   // clang-format on
-  x[0] = clip(round(r), 0, 255);
-  x[1] = clip(round(g), 0, 255);
-  x[2] = clip(round(b), 0, 255);
+  x[0] = CLAMP(round(r), 0, 255);
+  x[1] = CLAMP(round(g), 0, 255);
+  x[2] = CLAMP(round(b), 0, 255);
 }

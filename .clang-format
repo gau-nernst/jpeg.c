@@ -1,5 +1,7 @@
 ---
-Language:        Cpp
 BasedOnStyle:  LLVM
+---
+Language:        Cpp
 ColumnLimit:     120
+AlignArrayOfStructures: Right
 ...
