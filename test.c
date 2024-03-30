@@ -65,6 +65,8 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  jpeg_enable_debug_print();
+
   int width, height, n_channels;
   uint8_t *image = decode_jpeg(f, &width, &height, &n_channels);
   fclose(f);

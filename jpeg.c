@@ -8,6 +8,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int DEBUG_PRINT = 0;
+
+void jpeg_enable_debug_print() { DEBUG_PRINT = 1; }
+void jpeg_disable_debug_print() { DEBUG_PRINT = 0; }
+
+#define PRINT(...)                                                                                                     \
+  if (DEBUG_PRINT)                                                                                                     \
+    printf(__VA_ARGS__);
+
 #define BLOCK_SIZE 8
 #define MAX_HUFFMAN_CODE_LENGTH 16
 #define MAX_COMPONENTS 3
@@ -36,12 +45,12 @@
     ptr = NULL;                                                                                                        \
   }
 
-#define print_list(prefix, ptr, length, fmt)                                                                           \
+#define PRINT_LIST(prefix, ptr, length, fmt)                                                                           \
   {                                                                                                                    \
-    fprintf(stderr, prefix);                                                                                           \
+    PRINT(prefix);                                                                                                     \
     for (int _i = 0; _i < (length); _i++)                                                                              \
-      fprintf(stderr, fmt, (ptr)[_i]);                                                                                 \
-    fprintf(stderr, "\n");                                                                                             \
+      PRINT(fmt, (ptr)[_i]);                                                                                           \
+    PRINT("\n");                                                                                                       \
   }
 
 #define CDIV(x, y) (((x) + (y)-1) / (y))
@@ -178,7 +187,7 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
   bool finished = false;
   while (!finished) {
     _FREAD(marker, 1, 2, f);
-    fprintf(stderr, "%X%X ", marker[0], marker[1]);
+    PRINT("%X%X ", marker[0], marker[1]);
 
     ASSERT(marker[0] == 0xFF, "Not a marker");
 
@@ -195,7 +204,7 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
 
     switch (marker[1]) {
     case SOI:
-      fprintf(stderr, "SOI");
+      PRINT("SOI");
       break;
 
     case APP0:
@@ -219,28 +228,28 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
       break;
 
     case DRI:
-      fprintf(stderr, "DRI (length = %d)\n", buflen);
+      PRINT("DRI (length = %d)\n", buflen);
       ASSERT(buflen >= 2, "Payload not long enough");
       decoder.restart_interval = read_be_16(buffer);
-      fprintf(stderr, "  restart interval = %d\n", decoder.restart_interval);
+      PRINT("  restart interval = %d\n", decoder.restart_interval);
       break;
 
     case EOI:
-      fprintf(stderr, "EOI\n");
+      PRINT("EOI\n");
       finished = true;
       break;
 
     default:
       if ((APP0 < marker[1]) && (marker[1] <= APP0 + 15)) {
-        fprintf(stderr, "APP%d (length = %d)\n", marker[1] - APP0, buflen);
-        fprintf(stderr, "  identifier = %.*s\n", buflen, buffer);
+        PRINT("APP%d (length = %d)\n", marker[1] - APP0, buflen);
+        PRINT("  identifier = %.*s\n", buflen, buffer);
       } else
-        fprintf(stderr, "Unknown marker (length = %d)\n", buflen);
+        PRINT("Unknown marker (length = %d)\n", buflen);
       break;
     }
 
     _FREE(buffer);
-    fprintf(stderr, "\n");
+    PRINT("\n");
   }
 
   // TODO: free decoder
@@ -256,25 +265,25 @@ uint8_t *decode_jpeg(FILE *f, int *width, int *height, int *n_channels) {
 
 // JFIF i.e. JPEG Part 5
 void handle_app0(const uint8_t *buffer, uint16_t buflen) {
-  fprintf(stderr, "APP0 (length = %d)\n", buflen);
-  fprintf(stderr, "  identifier = %.5s\n", buffer); // either JFIF or JFXX
+  PRINT("APP0 (length = %d)\n", buflen);
+  PRINT("  identifier = %.5s\n", buffer); // either JFIF or JFXX
 
   if (strcmp((const char *)buffer, "JFIF") == 0) {
     ASSERT(buflen >= 14, "Payload is too short");
-    fprintf(stderr, "  version = %d.%d\n", buffer[5], buffer[6]);
-    fprintf(stderr, "  units = %d\n", buffer[7]);
-    fprintf(stderr, "  density = (%d, %d)\n", read_be_16(buffer + 8), read_be_16(buffer + 10));
-    fprintf(stderr, "  thumbnail = (%d, %d)\n", buffer[12], buffer[13]);
+    PRINT("  version = %d.%d\n", buffer[5], buffer[6]);
+    PRINT("  units = %d\n", buffer[7]);
+    PRINT("  density = (%d, %d)\n", read_be_16(buffer + 8), read_be_16(buffer + 10));
+    PRINT("  thumbnail = (%d, %d)\n", buffer[12], buffer[13]);
   } else if (strcmp((const char *)buffer, "JFXX") == 0) {
-    fprintf(stderr, "  extension_code = %X\n", buffer[5]);
+    PRINT("  extension_code = %X\n", buffer[5]);
   } else
-    fprintf(stderr, "  Invalid identifier\n");
+    PRINT("  Invalid identifier\n");
 }
 
 // ITU-T.81 B.2.4.1
 // there can be multiple quantization tables within 1 DQT segment
 void handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
-  fprintf(stderr, "DQT (length = %d)\n", buflen);
+  PRINT("DQT (length = %d)\n", buflen);
 
   int offset = 0;
   while (offset < buflen) {
@@ -282,7 +291,7 @@ void handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
     uint8_t identifier = lower_half(buffer[offset]);
     int table_size = 1 + BLOCK_SIZE * BLOCK_SIZE * (precision + 1);
 
-    fprintf(stderr, "  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
+    PRINT("  precision = %d (%d-bit), identifier = %d\n", precision, (precision + 1) * 8, identifier);
     ASSERT(buflen >= offset + table_size, "Payload is too short");
 
     uint16_t *q_table = decoder->q_tables[identifier];
@@ -295,10 +304,10 @@ void handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
     }
 
     for (int i = 0; i < BLOCK_SIZE; i++) {
-      fprintf(stderr, "  ");
+      PRINT("  ");
       for (int j = 0; j < BLOCK_SIZE; j++)
-        fprintf(stderr, " %3d", q_table[ZIG_ZAG[i][j]]);
-      fprintf(stderr, "\n");
+        PRINT(" %3d", q_table[ZIG_ZAG[i][j]]);
+      PRINT("\n");
     }
 
     offset += table_size;
@@ -308,13 +317,13 @@ void handle_dqt(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
 // ITU-T.81 B.2.4.2
 // there can be multiple huffman tables within 1 DHT segment
 void handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
-  fprintf(stderr, "DHT (length = %d)\n", buflen);
+  PRINT("DHT (length = %d)\n", buflen);
 
   int offset = 0;
   while (offset < buflen) {
     uint8_t class = upper_half(buffer[offset]);
     uint8_t identifier = lower_half(buffer[offset]);
-    fprintf(stderr, "  class = %d (%s), identifier = %d\n", class, class ? "AC" : "DC", identifier);
+    PRINT("  class = %d (%s), identifier = %d\n", class, class ? "AC" : "DC", identifier);
     ASSERT(buflen >= offset + 1 + MAX_HUFFMAN_CODE_LENGTH, "Payload is too short");
 
     // ITU-T.81 Annex C: create Huffman table
@@ -349,23 +358,23 @@ void handle_dht(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
       } else
         h_table->maxcode[i] = -1;
 
-    fprintf(stderr, "  n_codes = %d\n", n_codes);
-    print_list("  BITS     =", buffer + offset + 1, MAX_HUFFMAN_CODE_LENGTH, " %3d");
-    print_list("  HUFFSIZE =", h_table->huffsize, n_codes, " %3d");
-    print_list("  HUFFCODE =", h_table->huffcode, n_codes, " %3d");
-    print_list("  HUFFVAL  =", h_table->huffval, n_codes, " %3d");
-    fprintf(stderr, "\n");
-    print_list("  MINCODE  =", h_table->mincode, MAX_HUFFMAN_CODE_LENGTH, " %3d");
-    print_list("  MAXCODE  =", h_table->maxcode, MAX_HUFFMAN_CODE_LENGTH, " %3d");
-    print_list("  VALPTR   =", h_table->valptr, MAX_HUFFMAN_CODE_LENGTH, " %3d");
-    fprintf(stderr, "\n");
+    PRINT("  n_codes = %d\n", n_codes);
+    PRINT_LIST("  BITS     =", buffer + offset + 1, MAX_HUFFMAN_CODE_LENGTH, " %3d");
+    PRINT_LIST("  HUFFSIZE =", h_table->huffsize, n_codes, " %3d");
+    PRINT_LIST("  HUFFCODE =", h_table->huffcode, n_codes, " %3d");
+    PRINT_LIST("  HUFFVAL  =", h_table->huffval, n_codes, " %3d");
+    PRINT("\n");
+    PRINT_LIST("  MINCODE  =", h_table->mincode, MAX_HUFFMAN_CODE_LENGTH, " %3d");
+    PRINT_LIST("  MAXCODE  =", h_table->maxcode, MAX_HUFFMAN_CODE_LENGTH, " %3d");
+    PRINT_LIST("  VALPTR   =", h_table->valptr, MAX_HUFFMAN_CODE_LENGTH, " %3d");
+    PRINT("\n");
 
     offset += table_size;
   }
 }
 
 void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
-  fprintf(stderr, "SOF0 (length = %d)\n", buflen);
+  PRINT("SOF0 (length = %d)\n", buflen);
 
   decoder->encoding = SOF0;
 
@@ -376,9 +385,9 @@ void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
   decoder->width = read_be_16(buffer + 3);
   decoder->n_channels = buffer[5];
 
-  fprintf(stderr, "  encoding = Baseline DCT\n");
-  fprintf(stderr, "  precision = %d-bit\n", precision);
-  fprintf(stderr, "  image dimension = (%d, %d)\n", decoder->width, decoder->height);
+  PRINT("  encoding = Baseline DCT\n");
+  PRINT("  precision = %d-bit\n", precision);
+  PRINT("  image dimension = (%d, %d)\n", decoder->width, decoder->height);
 
   ASSERT(precision == 8, "Only 8-bit image is supported");
   ASSERT((buffer[5] == 1) || (buffer[5] == 3), "Only 1 or 3 channels are supported");
@@ -402,31 +411,31 @@ void handle_sof0(Decoder *decoder, const uint8_t *buffer, uint16_t buflen) {
     decoder->max_x_sampling = MAX(decoder->max_x_sampling, component->x_sampling);
     decoder->max_y_sampling = MAX(decoder->max_y_sampling, component->y_sampling);
 
-    fprintf(stderr, "  component %d: sampling_factor = (%d, %d) q_table_id = %d\n", component_id, component->x_sampling,
-            component->y_sampling, component->q_table_id);
+    PRINT("  component %d: sampling_factor = (%d, %d) q_table_id = %d\n", component_id, component->x_sampling,
+          component->y_sampling, component->q_table_id);
   }
 }
 
 void handle_sos(Decoder *decoder, const uint8_t *payload, uint16_t length, FILE *f) {
-  fprintf(stderr, "SOS\n");
+  PRINT("SOS\n");
 
   ASSERT(decoder->encoding == SOF0, "Only Baseline JPEG is support");
 
   uint8_t n_components = payload[0];
-  fprintf(stderr, "  n_components in scan = %d\n", n_components);
+  PRINT("  n_components in scan = %d\n", n_components);
   ASSERT(n_components <= decoder->n_channels, "Scan contains more channels than declared in SOF");
 
   for (int i = 0; i < n_components; i++) {
-    fprintf(stderr, "  component %d: DC coding table = %d  AC coding table = %d\n", payload[1 + i * 2],
-            upper_half(payload[2 + i * 2]), lower_half(payload[2 + i * 2]));
+    PRINT("  component %d: DC coding table = %d  AC coding table = %d\n", payload[1 + i * 2],
+          upper_half(payload[2 + i * 2]), lower_half(payload[2 + i * 2]));
     ASSERT(payload[1 + i * 2] - decoder->min_component < decoder->n_channels, "Encounter invalid component_id");
   }
 
   // not used by Baseline DCT
-  fprintf(stderr, "  ss = %d\n", payload[1 + n_components * 2]);
-  fprintf(stderr, "  se = %d\n", payload[2 + n_components * 2]);
-  fprintf(stderr, "  ah = %d\n", upper_half(payload[3 + n_components * 2]));
-  fprintf(stderr, "  al = %d\n", lower_half(payload[3 + n_components * 2]));
+  PRINT("  ss = %d\n", payload[1 + n_components * 2]);
+  PRINT("  se = %d\n", payload[2 + n_components * 2]);
+  PRINT("  ah = %d\n", upper_half(payload[3 + n_components * 2]));
+  PRINT("  al = %d\n", lower_half(payload[3 + n_components * 2]));
 
   if (n_components == 1) {
     // Non-interleaved order. A.2.2
@@ -549,7 +558,7 @@ uint8_t nextbit(FILE *f) {
 
       if (B2 != 0) {
         if ((RST0 <= B2) && (B2 <= RST7)) {
-          fprintf(stderr, "Encounter RST%d marker\n", B2 - RST0);
+          PRINT("Encounter RST%d marker\n", B2 - RST0);
           CNT = 0;
           longjmp(RST_JMP_BUF, 1);
         } else if (B2 == DNL) {
