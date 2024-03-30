@@ -1,4 +1,4 @@
-#include "jpeg.h"
+#include "jpeg_decode.h"
 #include <math.h>
 #include <setjmp.h>
 #include <signal.h>

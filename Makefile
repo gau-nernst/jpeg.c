@@ -12,7 +12,7 @@ endif
 $(images):
 	wget "https://www.w3.org/MarkUp/Test/xhtml-print/20050519/tests/$@" -q
 
-test: jpeg.o test.o
+test: jpeg_decode.o test.o
 	$(CC) $(CFLAGS) $^ -o $@ -lm
 
 test_all: test $(images)
@@ -26,7 +26,7 @@ python:
 	python jpeg_python/setup.py build_ext -i
 
 format:
-	clang-format -i jpeg.c jpeg.h test.c jpeg_python/jpeg_python.c
+	clang-format -i *.c *.h
 
 clean:
 	rm *.o *.tiff ./test

@@ -1,4 +1,4 @@
-#include "jpeg.h"
+#include "jpeg_decode.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
